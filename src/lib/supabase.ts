@@ -2,10 +2,10 @@ import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-
 
 // El anon key se utiliza exclusivamente desde el cliente y debe estar protegido
 // por las políticas RLS configuradas en el proyecto Supabase.
-const DEFAULT_SUPABASE_URL = 'https://aorhmskjhvdcrrmopzrt.supabase.co';
-const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFvcmhtc2tqaHZkY3JybW9wenJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxNDc2MjcsImV4cCI6MjEwMjcyMzYyN30.4kOu7kl0ktfwAnzq0aUbvX4SIzE3fBaRQgj33xdxIFQ';
+const DEFAULT_SUPABASE_URL = 'https://vdqnskhargxqnvskxawg.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZkcW5za2hhcmd4cW52c2t4YXdnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxODMxNzMsImV4cCI6MjEwMzc1OTE3M30.cwKvOKotgdcdWpvdPQFPTFN7buxQ9kCYhQogsE-wNpM';
 const CUSTOM_CONFIG_VERSION_KEY = 'photovault_supabase_config_version';
-export const SUPABASE_CONFIG_VERSION = '2';
+export const SUPABASE_CONFIG_VERSION = '4';
 
 const env = (import.meta as any).env || {};
 
