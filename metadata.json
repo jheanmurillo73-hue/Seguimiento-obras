@@ -1,0 +1,6 @@
+{
+  "name": "PhotoVault Pro",
+  "description": "Plataforma de gestión fotográfica, planos de inspección industrial y sincronización Supabase en campo",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
