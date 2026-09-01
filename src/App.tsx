@@ -19,6 +19,8 @@ import {
   getElectricalElementOption,
   getElectricalPlanArea,
   PlanArea,
+  getPhotoProgressPercentage,
+  ActivityActionCategory,
 } from './types';
 import {
   INITIAL_PHOTOS,
@@ -349,15 +351,26 @@ export default function App() {
     });
   };
 
-  const addActivity = (action: string, photoName: string, photoId: string, type: ActivityItem['type']) => {
+  const addActivity = (
+    action: string,
+    photoName: string,
+    photoId: string,
+    type: ActivityItem['type'],
+    extra?: Partial<ActivityItem>,
+  ) => {
+    const now = new Date();
     const newAct: ActivityItem = {
       id: `act-${Date.now()}`,
       timestamp: 'Justo ahora',
+      dateRaw: now.toISOString(),
       action,
       photoName,
       photoId,
       user: inspector.name,
+      userEmail: inspector.email,
+      userRole: userAccess.role,
       type,
+      ...extra,
     };
     setActivities((prev) => [newAct, ...prev]);
 
@@ -407,10 +420,79 @@ export default function App() {
     setPhotos((prev) =>
       prev.map((p) => (p.id === protectedUpdate.id ? protectedUpdate : p))
     );
-    addActivity('Detalles actualizados', protectedUpdate.name, protectedUpdate.id, 'edit');
+
+    // Auditoría detallada de cambios
+    const currentProgress = getPhotoProgressPercentage(current);
+    const updatedProgress = getPhotoProgressPercentage(protectedUpdate);
+    let actionDescription = 'Detalles actualizados';
+    let actionCategory: ActivityActionCategory = 'edit';
+    let details: string | undefined;
+
+    if (current.executionStatus !== protectedUpdate.executionStatus || current.status !== protectedUpdate.status) {
+      if (currentProgress !== updatedProgress) {
+        actionDescription = `Estado a "${protectedUpdate.executionStatus || protectedUpdate.status}" y avance al ${updatedProgress}%`;
+        actionCategory = 'progress';
+        details = `Estado (${current.executionStatus || current.status} → ${protectedUpdate.executionStatus || protectedUpdate.status}) y avance (${currentProgress}% → ${updatedProgress}%)`;
+      } else {
+        actionDescription = `Estado cambiado a ${protectedUpdate.executionStatus || protectedUpdate.status}`;
+        actionCategory = 'status';
+        details = `Estado modificado de "${current.executionStatus || current.status}" a "${protectedUpdate.executionStatus || protectedUpdate.status}"`;
+      }
+    } else if (currentProgress !== updatedProgress) {
+      actionDescription = `Avance actualizado a ${updatedProgress}%`;
+      actionCategory = 'progress';
+      details = `Porcentaje de progreso de obra: ${currentProgress}% → ${updatedProgress}%`;
+    } else if (current.verified !== protectedUpdate.verified) {
+      actionDescription = protectedUpdate.verified ? 'Inspección certificada y aprobada' : 'Certificación de inspección removida';
+      actionCategory = 'status';
+      details = protectedUpdate.verified ? 'Elemento marcado como verificado' : 'Verificación desmarcada';
+    } else if (current.metraje !== protectedUpdate.metraje) {
+      actionDescription = `Metraje actualizado a ${protectedUpdate.metraje} m`;
+      actionCategory = 'measurement';
+      details = `Longitud: ${current.metraje ?? 0} m → ${protectedUpdate.metraje ?? 0} m`;
+    } else if (current.acta !== protectedUpdate.acta) {
+      actionDescription = `Acta asignada: ${protectedUpdate.acta || 'Sin acta'}`;
+      actionCategory = 'acta';
+      details = `Asignación de acta de obra modificada`;
+    }
+
+    addActivity(actionDescription, protectedUpdate.name, protectedUpdate.id, 'edit', {
+      actionCategory,
+      elementType: getElementType(protectedUpdate),
+      details,
+    });
     showToast(`Actualizado "${protectedUpdate.name}"`);
 
     syncPhotoToSupabase(protectedUpdate, `Los cambios de "${protectedUpdate.name}"`);
+  };
+
+  const handleBulkUpdatePhotos = (updatedList: InspectionPhoto[], summaryMessage?: string) => {
+    if (!updatedList.length) return;
+    const canAssignActa = userAccess.role === 'admin' || settings.allowInspectorActaAssignment;
+    const protectedList = updatedList.map((updated) => {
+      const current = photos.find((photo) => photo.id === updated.id);
+      if (!current) return updated;
+      return applyPhotoUpdatePermissions({
+        current,
+        updated,
+        isAdmin: userAccess.role === 'admin',
+        canAssignActa,
+      });
+    });
+
+    const idMap = new Map(protectedList.map((p) => [p.id, p]));
+    setPhotos((prev) => prev.map((p) => idMap.get(p.id) || p));
+
+    protectedList.forEach((photo) => {
+      syncPhotoToSupabase(photo, `El elemento "${photo.name}"`);
+    });
+
+    const msg = summaryMessage || `Ajuste grupal aplicado a ${protectedList.length} elementos`;
+    addActivity(msg, `${protectedList.length} elementos`, protectedList[0]?.id || '', 'edit', {
+      actionCategory: 'progress',
+      details: `Ajuste grupal de propiedades en ${protectedList.length} elementos en el plano.`,
+    });
+    showToast(msg);
   };
 
   const handleUpdatePhotoPosition = (
@@ -785,9 +867,11 @@ export default function App() {
                 photos={photos}
                 inspector={inspector}
                 isAdmin={userAccess.role === 'admin'}
+                canAssignActa={userAccess.role === 'admin' || settings.allowInspectorActaAssignment}
                 onSelectPhoto={handleSelectPhoto}
                 onNavigateToUpload={() => handleTabChange('upload')}
                 onUpdatePhoto={handleUpdatePhoto}
+                onBulkUpdatePhotos={handleBulkUpdatePhotos}
                 onUpdatePhotoPosition={handleUpdatePhotoPosition}
                 onUpdatePipelineMeasurements={handleUpdatePipelineMeasurements}
                 onCreatePhoto={handleCreatePhotoFromPlan}
@@ -847,6 +931,8 @@ export default function App() {
                 activities={activities}
                 photos={photos}
                 onOpenPhoto={handleOpenPhotoFromActivity}
+                isAdmin={userAccess.role === 'admin'}
+                onClearLogs={() => setActivities([])}
               />
             ) : (
               <DashboardView

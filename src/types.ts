@@ -74,7 +74,7 @@ export const isElectricalElementType = (value?: string): value is ElectricalElem
 
 export const getElectricalPlanArea = (electricalType?: ElectricalElementType): PlanArea => {
   if (electricalType === 'poste_alumbrado') return 'electrical_lighting';
-  if (electricalType === 'tablero_baja_tension' || electricalType === 'tablero_distribucion' || electricalType === 'malla_tierra') return 'electrical_bt';
+  // Reorganización: Tablero de distribución, Malla a tierra y resto de elementos eléctricos se agrupan en MT
   return 'electrical_mt';
 };
 
@@ -185,6 +185,7 @@ export interface InspectionPhoto {
   dateRaw: string;
   status: SyncStatus;
   executionStatus: ExecutionStatus;
+  progressPercentage?: number; // Porcentaje de avance de 0 a 100
   category: PhotoCategory;
   categoryLabel: string;
   location: string;
@@ -264,6 +265,9 @@ export const getElementType = (
     ? 'tuberia'
     : element.elementType || (element.cameraCode ? 'camara' : 'caja');
 
+export const isCable = (element: Pick<InspectionPhoto, 'electricalType'>): boolean =>
+  element.electricalType === 'cableado';
+
 export interface BlueprintOverlay {
   id: string;
   name: string;
@@ -328,6 +332,30 @@ export interface AppSettings {
   offlineStorageLimitMb: number;
 }
 
+export const getPhotoProgressPercentage = (
+  photo?: Pick<InspectionPhoto, 'progressPercentage' | 'executionStatus'> | null,
+): number => {
+  if (!photo) return 0;
+  if (typeof photo.progressPercentage === 'number' && !Number.isNaN(photo.progressPercentage)) {
+    return Math.max(0, Math.min(100, Math.round(photo.progressPercentage)));
+  }
+  if (photo.executionStatus === 'Terminado') return 100;
+  if (photo.executionStatus === 'No iniciado') return 0;
+  return 50;
+};
+
+export type ActivityActionCategory =
+  | 'creation'
+  | 'progress'
+  | 'status'
+  | 'measurement'
+  | 'evidence'
+  | 'location'
+  | 'acta'
+  | 'deletion'
+  | 'edit'
+  | 'sync';
+
 export interface ActivityItem {
   id: string;
   timestamp: string;
@@ -335,6 +363,14 @@ export interface ActivityItem {
   photoName: string;
   photoId: string;
   user: string;
+  userEmail?: string;
+  userRole?: string;
+  dateRaw?: string;
+  actionCategory?: ActivityActionCategory;
+  elementType?: ElementType;
+  details?: string;
+  previousValue?: string;
+  newValue?: string;
   type: 'upload' | 'sync' | 'edit' | 'flag' | 'verified';
 }
 

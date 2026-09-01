@@ -1,6 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { InspectionPhoto, InspectorProfile, CameraType, ExecutionStatus, getElementType } from '../types';
-import { StatusBreakdown, getWorkElementStatistics } from '../lib/workElementStatistics';
+import { InspectionPhoto, InspectorProfile, CameraType, ExecutionStatus, getElementType, getPhotoProgressPercentage } from '../types';
 import { getActaItemKey } from '../data/actaItems';
 
 interface DatabaseTableViewProps {
@@ -20,54 +19,6 @@ type SortOrder = 'asc' | 'desc';
 const getPhotoActaItems = (photo: InspectionPhoto) => photo.actaItems?.length
   ? photo.actaItems
   : photo.actaItem ? [photo.actaItem] : [];
-
-const StatusMatrixCard: React.FC<{
-  title: string;
-  icon: string;
-  accentClass: string;
-  data: Record<'MT' | 'BT' | 'Datos', StatusBreakdown>;
-  total: number;
-  note?: string;
-}> = ({ title, icon, accentClass, data, total, note }) => (
-  <section className="overflow-hidden rounded-2xl border border-[#c2c6d4] bg-white shadow-xs" aria-label={title}>
-    <div className="flex items-center justify-between border-b border-[#dbe5e9] bg-[#f7fbfd] px-4 py-3">
-      <div>
-        <h2 className="font-['Hanken_Grotesk'] text-sm font-bold text-[#071e27]">{title}</h2>
-        <p className="mt-0.5 text-[11px] text-[#607d8b]">Estado de ejecución por clasificación técnica</p>
-      </div>
-      <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${accentClass}`}>
-        <span className="material-symbols-outlined text-[18px]">{icon}</span>
-      </span>
-    </div>
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[460px] text-left text-xs">
-        <thead className="bg-white text-[10px] uppercase tracking-wide text-[#607d8b]">
-          <tr>
-            <th className="px-4 py-2.5 font-bold">Tipo</th>
-            <th className="px-3 py-2.5 text-center font-bold">No iniciado</th>
-            <th className="px-3 py-2.5 text-center font-bold">En proceso</th>
-            <th className="px-3 py-2.5 text-center font-bold">Terminado</th>
-            <th className="px-4 py-2.5 text-right font-bold">Total</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[#e5edf1] text-[#173f58]">
-          {(['MT', 'BT', 'Datos'] as const).map((type) => (
-            <tr key={type}>
-              <td className="px-4 py-2.5 font-bold">{type}</td>
-              <td className="px-3 py-2.5 text-center text-slate-600">{data[type]['No iniciado']}</td>
-              <td className="px-3 py-2.5 text-center text-amber-700">{data[type]['En proceso']}</td>
-              <td className="px-3 py-2.5 text-center text-emerald-700">{data[type].Terminado}</td>
-              <td className="px-4 py-2.5 text-right font-bold">{data[type].total}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <div className="border-t border-[#e5edf1] px-4 py-2.5 text-[11px] text-[#607d8b]">
-      <span className="font-bold text-[#173f58]">{total} elementos físicos.</span>{note ? ` ${note}` : ''}
-    </div>
-  </section>
-);
 
 export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
   photos,
@@ -210,42 +161,6 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
       return 0;
     });
   }, [filteredPhotos, sortField, sortOrder]);
-
-  // Summary Metrics
-  const metrics = useMemo(() => {
-    const cameras = photos.filter((p) => getElementType(p) === 'camara');
-    const pipes = photos.filter((p) => getElementType(p) === 'tuberia');
-    const total = cameras.length;
-    const mtCount = cameras.filter((p) => (p.cameraType || '').toUpperCase() === 'MT').length;
-    const btCount = cameras.filter((p) => (p.cameraType || '').toUpperCase() === 'BT').length;
-    const datosCount = cameras.filter((p) => (p.cameraType || '').toUpperCase() === 'DATOS').length;
-    const terminadosCount = cameras.filter((p) => p.executionStatus === 'Terminado').length;
-    const enProcesoCount = cameras.filter((p) => p.executionStatus === 'En proceso').length;
-    const noIniciadosCount = cameras.filter((p) => p.executionStatus === 'No iniciado').length;
-
-    const totalMetros = pipes.reduce((acc, curr) => {
-      const m = typeof curr.metraje === 'number' ? curr.metraje : parseFloat(String(curr.metraje || '0'));
-      return acc + (isNaN(m) ? 0 : m);
-    }, 0);
-
-    const positionedOnPlanCount = photos.filter((p) => typeof p.planX === 'number' && typeof p.planY === 'number').length;
-    const percentTerminado = total > 0 ? Math.round((terminadosCount / total) * 100) : 0;
-
-    return {
-      total,
-      mtCount,
-      btCount,
-      datosCount,
-      terminadosCount,
-      enProcesoCount,
-      noIniciadosCount,
-      totalMetros: Math.round(totalMetros * 10) / 10,
-      positionedOnPlanCount,
-      percentTerminado,
-    };
-  }, [photos]);
-
-  const workElementStatistics = useMemo(() => getWorkElementStatistics(photos), [photos]);
 
   // Handle Sort Click
   const handleSort = (field: SortField) => {
@@ -460,161 +375,6 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
             <span className="material-symbols-outlined text-[20px]">print</span>
           </button>
         </div>
-      </div>
-
-      {/* ----------------- KPI SUMMARY CARDS ----------------- */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
-        {/* Total Elements */}
-        <div className="bg-white p-4 rounded-2xl border border-[#c2c6d4] shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-['Inter'] font-bold text-[#727783] uppercase tracking-wider">
-              Total Cámaras
-            </span>
-            <span className="w-7 h-7 rounded-lg bg-[#e6f6ff] text-[#004d99] flex items-center justify-center">
-              <span className="material-symbols-outlined text-[16px]">inbox</span>
-            </span>
-          </div>
-          <div className="mt-2 text-2xl font-bold font-['Hanken_Grotesk'] text-[#071e27]">
-            {metrics.total}
-          </div>
-          <div className="mt-1 text-[11px] text-[#424752] flex items-center gap-1.5">
-            <span className="text-[#004d99] font-bold">{metrics.mtCount} MT</span>
-            <span>•</span>
-            <span className="text-amber-600 font-bold">{metrics.btCount} BT</span>
-            <span>•</span>
-            <span className="text-teal-600 font-bold">{metrics.datosCount} Datos</span>
-          </div>
-          <div className="mt-1 text-[10px] text-[#607d8b]">
-            {metrics.noIniciadosCount} sin iniciar · {metrics.enProcesoCount} en proceso
-          </div>
-        </div>
-
-        {/* Metraje Total */}
-        <div className="bg-white p-4 rounded-2xl border border-[#c2c6d4] shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-['Inter'] font-bold text-[#727783] uppercase tracking-wider">
-              Metraje de Tubería
-            </span>
-            <span className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
-              <span className="material-symbols-outlined text-[16px]">straighten</span>
-            </span>
-          </div>
-          <div className="mt-2 text-2xl font-bold font-['Hanken_Grotesk'] text-[#071e27]">
-            {metrics.totalMetros} <span className="text-sm font-normal text-[#727783]">m</span>
-          </div>
-          <div className="mt-1 text-[11px] text-[#424752]">
-            En {uniqueTramos.length} tramos canalizados
-          </div>
-        </div>
-
-        {/* Tubos por red */}
-        <div className="bg-white p-4 rounded-2xl border border-[#c2c6d4] shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-['Inter'] font-bold text-[#727783] uppercase tracking-wider">
-              Tubos por red
-            </span>
-            <span className="w-7 h-7 rounded-lg bg-violet-50 text-violet-700 flex items-center justify-center">
-              <span className="material-symbols-outlined text-[16px]">account_tree</span>
-            </span>
-          </div>
-          <div className="mt-2 grid grid-cols-3 gap-1.5 text-center">
-            <div className="rounded-lg bg-[#eef6ff] px-1.5 py-1.5">
-              <div className="text-lg font-bold font-['Hanken_Grotesk'] text-[#075a91]">{workElementStatistics.tubeTotals.MT}</div>
-              <div className="text-[9px] font-bold uppercase tracking-wide text-[#547181]">MT</div>
-            </div>
-            <div className="rounded-lg bg-amber-50 px-1.5 py-1.5">
-              <div className="text-lg font-bold font-['Hanken_Grotesk'] text-amber-700">{workElementStatistics.tubeTotals.BT}</div>
-              <div className="text-[9px] font-bold uppercase tracking-wide text-amber-800">BT</div>
-            </div>
-            <div className="rounded-lg bg-teal-50 px-1.5 py-1.5">
-              <div className="text-lg font-bold font-['Hanken_Grotesk'] text-teal-700">{workElementStatistics.tubeTotals.Datos}</div>
-              <div className="text-[9px] font-bold uppercase tracking-wide text-teal-800">Datos</div>
-            </div>
-          </div>
-          <div className="mt-1 text-[10px] text-[#607d8b]">Cantidad física de tubos registrados</div>
-        </div>
-
-        {/* Avance de Obra */}
-        <div className="bg-white p-4 rounded-2xl border border-[#c2c6d4] shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-['Inter'] font-bold text-[#727783] uppercase tracking-wider">
-              Avance Ejecución
-            </span>
-            <span className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
-              <span className="material-symbols-outlined text-[16px]">task_alt</span>
-            </span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold font-['Hanken_Grotesk'] text-emerald-700">
-              {metrics.percentTerminado}%
-            </span>
-            <span className="text-xs text-[#727783]">
-              ({metrics.terminadosCount}/{metrics.total})
-            </span>
-          </div>
-          <div className="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
-            <div
-              className="bg-emerald-500 h-full rounded-full transition-all duration-300"
-              style={{ width: `${metrics.percentTerminado}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Tramos Únicos */}
-        <div className="bg-white p-4 rounded-2xl border border-[#c2c6d4] shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-['Inter'] font-bold text-[#727783] uppercase tracking-wider">
-              Tramos de Red
-            </span>
-            <span className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
-              <span className="material-symbols-outlined text-[16px]">alt_route</span>
-            </span>
-          </div>
-          <div className="mt-2 text-2xl font-bold font-['Hanken_Grotesk'] text-[#071e27]">
-            {uniqueTramos.length}
-          </div>
-          <div className="mt-1 text-[11px] text-[#424752] truncate">
-            {uniqueTramos.slice(0, 2).join(', ')}
-            {uniqueTramos.length > 2 && ` +${uniqueTramos.length - 2}`}
-          </div>
-        </div>
-
-        {/* Ubicadas en plano */}
-        <div className="bg-white p-4 rounded-2xl border border-[#c2c6d4] shadow-xs col-span-2 sm:col-span-1">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-['Inter'] font-bold text-[#727783] uppercase tracking-wider">
-              Ubicadas en plano
-            </span>
-            <span className="w-7 h-7 rounded-lg bg-cyan-50 text-cyan-600 flex items-center justify-center">
-              <span className="material-symbols-outlined text-[16px]">location_on</span>
-            </span>
-          </div>
-          <div className="mt-2 text-2xl font-bold font-['Hanken_Grotesk'] text-[#071e27]">
-            {metrics.positionedOnPlanCount}
-          </div>
-          <div className="mt-1 text-[11px] text-cyan-700 font-medium flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-500"></span>
-            Marcadas sobre el JPG
-          </div>
-        </div>
-      </div>
-
-      <div className="grid gap-3.5 xl:grid-cols-2">
-        <StatusMatrixCard
-          title="Cámaras por estado"
-          icon="videocam"
-          accentClass="bg-[#e6f6ff] text-[#004d99]"
-          data={workElementStatistics.cameras}
-          total={workElementStatistics.totalCameras}
-        />
-        <StatusMatrixCard
-          title="Tramos de tubería por estado"
-          icon="timeline"
-          accentClass="bg-indigo-50 text-indigo-700"
-          data={workElementStatistics.pipes}
-          total={workElementStatistics.totalPipes}
-          note="Un tramo con varias conducciones se cuenta en cada tipo asociado."
-        />
       </div>
 
       {/* ----------------- SEARCH & FILTERS TOOLBAR ----------------- */}
@@ -1087,20 +847,35 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
                         )}
                       </td>
 
-                      {/* Status */}
+                      {/* Status & % Avance */}
                       <td className="py-3 px-3 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${
-                            isTerminado
-                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                              : 'bg-amber-100 text-amber-800 border border-amber-300'
-                          }`}
-                        >
-                          <span className="material-symbols-outlined text-[14px]">
-                            {isTerminado ? 'check_circle' : 'pending'}
+                        <div className="space-y-1">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                              isTerminado
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                : 'bg-amber-100 text-amber-800 border border-amber-300'
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-[14px]">
+                              {isTerminado ? 'check_circle' : 'pending'}
+                            </span>
+                            <span>{photo.executionStatus || 'En proceso'}</span>
                           </span>
-                          <span>{photo.executionStatus || 'En proceso'}</span>
-                        </span>
+                          <div className="flex items-center gap-1.5 text-[11px] font-mono text-[#527284]">
+                            <div className="w-14 bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${
+                                  isTerminado ? 'bg-emerald-500' : 'bg-amber-500'
+                                }`}
+                                style={{ width: `${getPhotoProgressPercentage(photo)}%` }}
+                              />
+                            </div>
+                            <span className="font-bold text-[#071e27]">
+                              {getPhotoProgressPercentage(photo)}%
+                            </span>
+                          </div>
+                        </div>
                       </td>
 
                       {/* Inspector */}
@@ -1202,99 +977,102 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
       {previewPhoto && (
         <div
           onClick={() => setPreviewPhoto(null)}
-          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl max-w-2xl w-full overflow-hidden shadow-2xl border border-[#c2c6d4] flex flex-col max-h-[90vh]"
+            className="bg-white rounded-2xl max-w-2xl w-full overflow-hidden shadow-2xl border border-[#c2c6d4] flex flex-col max-h-[92dvh]"
           >
             {/* Modal Header */}
-            <div className="p-4 bg-[#e6f6ff] border-b border-[#c2c6d4] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-1 rounded-lg bg-[#004d99] text-white text-xs font-bold font-mono">
+            <div className="p-3 sm:p-4 bg-[#e6f6ff] border-b border-[#c2c6d4] flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2 min-w-0 pr-2">
+                <span className="px-2.5 py-1 rounded-lg bg-[#004d99] text-white text-xs font-bold font-mono shrink-0">
                   {previewPhoto.cameraCode || 'Cámara'}
                 </span>
-                <h3 className="font-['Hanken_Grotesk'] font-bold text-base text-[#071e27]">
+                <h3 className="font-['Hanken_Grotesk'] font-bold text-sm sm:text-base text-[#071e27] truncate">
                   {previewPhoto.name}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setPreviewPhoto(null)}
-                className="w-8 h-8 rounded-full flex items-center justify-center text-[#424752] hover:bg-white transition-colors"
+                className="w-8 h-8 rounded-full flex items-center justify-center text-[#424752] hover:bg-white transition-colors shrink-0"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
             </div>
 
-            {/* Modal Image Body */}
-            <div className="p-4 bg-slate-900 flex items-center justify-center max-h-[60vh] overflow-hidden">
-              <img
-                src={previewPhoto.imageUrl}
-                alt={previewPhoto.name}
-                className="max-h-[55vh] max-w-full object-contain rounded-lg shadow-lg"
-              />
-            </div>
-
-            {/* Modal Info Footer */}
-            <div className="p-4 bg-white space-y-3 font-['Inter']">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                <div className="p-2 bg-[#f3faff] rounded-lg border border-[#c2c6d4]">
-                  <span className="text-[#727783] block">Tipo de Red:</span>
-                  <span className="font-bold text-[#071e27]">{previewPhoto.cameraType || 'MT'}</span>
-                </div>
-                <div className="p-2 bg-[#f3faff] rounded-lg border border-[#c2c6d4]">
-                  <span className="text-[#727783] block">Tramo:</span>
-                  <span className="font-bold text-[#071e27]">{previewPhoto.tramo || 'N/A'}</span>
-                </div>
-                <div className="p-2 bg-[#f3faff] rounded-lg border border-[#c2c6d4]">
-                  <span className="text-[#727783] block">Metraje:</span>
-                  <span className="font-bold text-[#071e27] font-mono">{previewPhoto.metraje || '0'} m</span>
-                </div>
-                <div className="p-2 bg-[#f3faff] rounded-lg border border-[#c2c6d4]">
-                  <span className="text-[#727783] block">Estado:</span>
-                  <span
-                    className={`font-bold ${
-                      previewPhoto.executionStatus === 'Terminado'
-                        ? 'text-emerald-600'
-                        : 'text-amber-600'
-                    }`}
-                  >
-                    {previewPhoto.executionStatus || 'En proceso'}
-                  </span>
-                </div>
+            {/* Modal Scrollable Body */}
+            <div className="overflow-y-auto flex-1 divide-y divide-slate-100">
+              {/* Modal Image Body */}
+              <div className="p-3 sm:p-4 bg-slate-900 flex items-center justify-center min-h-[180px] max-h-[45vh] overflow-hidden">
+                <img
+                  src={previewPhoto.imageUrl}
+                  alt={previewPhoto.name}
+                  className="max-h-[42vh] max-w-full object-contain rounded-lg shadow-lg"
+                />
               </div>
 
-              {previewPhoto.fieldNotes && (
-                <div className="text-xs p-2.5 bg-slate-50 rounded-lg text-[#424752] border border-slate-200">
-                  <span className="font-bold text-[#071e27]">Notas de Campo: </span>
-                  {previewPhoto.fieldNotes}
+              {/* Modal Info Footer */}
+              <div className="p-4 bg-white space-y-3 font-['Inter']">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                  <div className="p-2 bg-[#f3faff] rounded-lg border border-[#c2c6d4]">
+                    <span className="text-[#727783] block">Tipo de Red:</span>
+                    <span className="font-bold text-[#071e27]">{previewPhoto.cameraType || 'MT'}</span>
+                  </div>
+                  <div className="p-2 bg-[#f3faff] rounded-lg border border-[#c2c6d4]">
+                    <span className="text-[#727783] block">Tramo:</span>
+                    <span className="font-bold text-[#071e27]">{previewPhoto.tramo || 'N/A'}</span>
+                  </div>
+                  <div className="p-2 bg-[#f3faff] rounded-lg border border-[#c2c6d4]">
+                    <span className="text-[#727783] block">Metraje:</span>
+                    <span className="font-bold text-[#071e27] font-mono">{previewPhoto.metraje || '0'} m</span>
+                  </div>
+                  <div className="p-2 bg-[#f3faff] rounded-lg border border-[#c2c6d4]">
+                    <span className="text-[#727783] block">Estado:</span>
+                    <span
+                      className={`font-bold ${
+                        previewPhoto.executionStatus === 'Terminado'
+                          ? 'text-emerald-600'
+                          : 'text-amber-600'
+                      }`}
+                    >
+                      {previewPhoto.executionStatus || 'En proceso'}
+                    </span>
+                  </div>
                 </div>
-              )}
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#c2c6d4]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreviewPhoto(null);
-                    onNavigateToMap(previewPhoto);
-                  }}
-                  className="px-4 py-2 bg-[#cfe6f2] hover:bg-[#b8d8ec] text-[#004d99] font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all"
-                >
-                  <span className="material-symbols-outlined text-[16px]">map</span>
-                  <span>Ver en Plano</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreviewPhoto(null);
-                    onSelectPhoto(previewPhoto);
-                  }}
-                  className="px-4 py-2 bg-[#004d99] hover:bg-[#1565c0] text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all"
-                >
-                  <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-                  <span>Ver Detalle Completo</span>
-                </button>
+                {previewPhoto.fieldNotes && (
+                  <div className="text-xs p-2.5 bg-slate-50 rounded-lg text-[#424752] border border-slate-200">
+                    <span className="font-bold text-[#071e27]">Notas de Campo: </span>
+                    {previewPhoto.fieldNotes}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#c2c6d4]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewPhoto(null);
+                      onNavigateToMap(previewPhoto);
+                    }}
+                    className="px-3.5 py-2 bg-[#cfe6f2] hover:bg-[#b8d8ec] text-[#004d99] font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">map</span>
+                    <span>Ver en Plano</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewPhoto(null);
+                      onSelectPhoto(previewPhoto);
+                    }}
+                    className="px-3.5 py-2 bg-[#004d99] hover:bg-[#1565c0] text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                    <span>Ver Detalle Completo</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>

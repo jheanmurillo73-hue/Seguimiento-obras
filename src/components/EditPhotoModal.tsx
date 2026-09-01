@@ -84,6 +84,15 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
   const [cableMeters, setCableMeters] = useState<string>(photo.cableMeters !== undefined ? String(photo.cableMeters) : '');
   const [fieldNotes, setFieldNotes] = useState(photo.fieldNotes ?? '');
   const [executionStatus, setExecutionStatus] = useState<ExecutionStatus>(photo.executionStatus || 'En proceso');
+  const [progressPercentage, setProgressPercentage] = useState<number>(() =>
+    photo.progressPercentage !== undefined
+      ? photo.progressPercentage
+      : photo.executionStatus === 'Terminado'
+        ? 100
+        : photo.executionStatus === 'No iniciado'
+          ? 0
+          : 50,
+  );
   const [requiresImmediateAction, setRequiresImmediateAction] = useState(photo.requiresImmediateAction ?? false);
   const [verified, setVerified] = useState(photo.verified ?? false);
   const [evidenceTimeline, setEvidenceTimeline] = useState(() => normalizeEvidenceTimeline(photo));
@@ -238,11 +247,37 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
       cableMeters: photo.electricalType === 'cableado' ? cableMeters.trim() || undefined : undefined,
       fieldNotes: fieldNotes.trim(),
       executionStatus,
+      progressPercentage,
       requiresImmediateAction,
       status: requiresImmediateAction ? 'Flagged' : 'Synced',
       verified,
     });
     onClose();
+  };
+
+  const handleStatusChange = (status: ExecutionStatus) => {
+    setExecutionStatus(status);
+    if (status === 'Terminado') {
+      setProgressPercentage(100);
+    } else if (status === 'No iniciado') {
+      setProgressPercentage(0);
+    } else if (status === 'En proceso') {
+      if (progressPercentage === 0 || progressPercentage === 100) {
+        setProgressPercentage(50);
+      }
+    }
+  };
+
+  const handleProgressChange = (val: number) => {
+    const clamped = Math.max(0, Math.min(100, Math.round(val)));
+    setProgressPercentage(clamped);
+    if (clamped === 100) {
+      setExecutionStatus('Terminado');
+    } else if (clamped === 0) {
+      setExecutionStatus('No iniciado');
+    } else {
+      setExecutionStatus('En proceso');
+    }
   };
 
   const addActa = () => {
@@ -269,8 +304,8 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto overscroll-contain bg-black/50 p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] backdrop-blur-xs sm:items-center sm:p-4">
-      <div role="dialog" aria-modal="true" aria-labelledby="edit-photo-modal-title" className="flex max-h-[calc(100dvh-1rem-env(safe-area-inset-bottom))] min-h-0 w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-t-2xl border border-[#c2c6d4] bg-white shadow-2xl animate-in zoom-in-95 duration-150 sm:max-h-[90vh] sm:rounded-xl">
+    <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto overscroll-contain bg-slate-950/60 p-0 pb-[calc(0.5rem+env(safe-area-inset-bottom))] backdrop-blur-xs sm:items-center sm:p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="edit-photo-modal-title" className="flex max-h-[92dvh] min-h-0 w-full min-w-0 max-w-lg md:max-w-xl flex-col overflow-hidden rounded-t-2xl border border-[#c2c6d4] bg-white shadow-2xl animate-in fade-in slide-in-from-bottom-6 sm:slide-in-from-bottom-0 sm:zoom-in-95 duration-200 sm:max-h-[88vh] sm:rounded-2xl">
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-[#c2c6d4] bg-[#e6f6ff] px-4 py-3 sm:p-4">
           <div className="flex items-center gap-2">
@@ -415,7 +450,7 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               <button
                 type="button"
-                onClick={() => setExecutionStatus('No iniciado')}
+                onClick={() => handleStatusChange('No iniciado')}
                 className={`py-2.5 px-3 rounded-lg border font-['Inter'] font-bold text-[13px] flex items-center justify-center gap-2 transition-all ${
                   executionStatus === 'No iniciado'
                     ? 'bg-[#607d8b] text-white border-[#607d8b] shadow-xs'
@@ -427,7 +462,7 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setExecutionStatus('En proceso')}
+                onClick={() => handleStatusChange('En proceso')}
                 className={`py-2.5 px-3 rounded-lg border font-['Inter'] font-bold text-[13px] flex items-center justify-center gap-2 transition-all ${
                   executionStatus === 'En proceso'
                     ? 'bg-[#f59e0b] text-white border-[#f59e0b] shadow-xs'
@@ -439,7 +474,7 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setExecutionStatus('Terminado')}
+                onClick={() => handleStatusChange('Terminado')}
                 className={`py-2.5 px-3 rounded-lg border font-['Inter'] font-bold text-[13px] flex items-center justify-center gap-2 transition-all ${
                   executionStatus === 'Terminado'
                     ? 'bg-[#16a34a] text-white border-[#16a34a] shadow-xs'
@@ -449,6 +484,71 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
                 <span className="material-symbols-outlined text-[18px]">check_circle</span>
                 Terminado
               </button>
+            </div>
+          </div>
+
+          {/* Porcentaje de Avance */}
+          <div className="rounded-xl border border-[#b7d5e4] bg-[#f8fbfd] p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[18px] text-[#0566aa]">trending_up</span>
+                <label htmlFor="photo-progress-input" className="font-['Inter'] text-[13px] font-bold text-[#071e27]">Porcentaje de Avance</label>
+              </div>
+              <div className="flex items-center gap-1">
+                <input
+                  id="photo-progress-input"
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={progressPercentage}
+                  onChange={(e) => handleProgressChange(Number(e.target.value))}
+                  className="w-16 h-8 rounded-lg border border-[#bcd4e6] bg-white px-2 text-right font-mono text-[14px] font-bold text-[#073f74] outline-none focus:border-[#004d99]"
+                />
+                <span className="font-mono text-[14px] font-bold text-[#073f74]">%</span>
+              </div>
+            </div>
+
+            {/* Visual Progress Bar */}
+            <div className="w-full bg-[#e1edf3] h-2.5 rounded-full overflow-hidden">
+              <div
+                className={`h-full transition-all duration-300 ${
+                  progressPercentage === 100
+                    ? 'bg-emerald-600'
+                    : progressPercentage === 0
+                      ? 'bg-slate-400'
+                      : 'bg-amber-500'
+                }`}
+                style={{ width: `${progressPercentage}%` }}
+              />
+            </div>
+
+            {/* Slider */}
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={progressPercentage}
+              onChange={(e) => handleProgressChange(Number(e.target.value))}
+              className="w-full accent-[#004d99] cursor-pointer"
+            />
+
+            {/* Quick preset buttons */}
+            <div className="flex items-center justify-between gap-1 pt-1">
+              {[0, 25, 50, 75, 100].map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => handleProgressChange(preset)}
+                  className={`flex-1 py-1 rounded-md border text-[11px] font-bold transition-all ${
+                    progressPercentage === preset
+                      ? 'border-[#004d99] bg-[#004d99] text-white shadow-xs'
+                      : 'border-[#cfe0e9] bg-white text-[#315c70] hover:bg-[#eef6fa]'
+                  }`}
+                >
+                  {preset}%
+                </button>
+              ))}
             </div>
           </div>
 
