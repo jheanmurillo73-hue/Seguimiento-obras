@@ -344,10 +344,10 @@ export const BulkEditModal: React.FC<BulkEditModalProps> = ({
             </div>
             <div>
               <h3 id="bulk-edit-modal-title" className="font-['Hanken_Grotesk'] text-base font-bold text-[#071e27] sm:text-lg">
-                Ajuste Grupal de Propiedades
+                Edición Grupal de Propiedades
               </h3>
               <p className="text-xs text-[#527284]">
-                {counts.total} elemento{counts.total === 1 ? '' : 's'} seleccionado{counts.total === 1 ? '' : 's'}
+                {counts.total} elemento{counts.total === 1 ? '' : 's'} seleccionado{counts.total === 1 ? '' : 's'} · Actualiza acta, avance y estado simultáneamente
               </p>
             </div>
           </div>

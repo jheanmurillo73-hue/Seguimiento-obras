@@ -1,4 +1,4 @@
-import { ExecutionStatus, InspectionPhoto, getElementType, getPhotoProgressPercentage } from '../types';
+import { ExecutionStatus, InspectionPhoto, getElementType, getPhotoProgressPercentage, getPhotoNetworkInfo, PipeNetworkType } from '../types';
 
 export const EXECUTION_STATUSES: ReadonlyArray<ExecutionStatus> = ['No iniciado', 'En proceso', 'Terminado'];
 
@@ -61,11 +61,15 @@ const getPipeNetwork = (network: string): WorkNetwork | null => {
   return null;
 };
 
-const getPipeConduits = (photo: InspectionPhoto) => photo.pipeConduits?.length
-  ? photo.pipeConduits
-  : photo.pipeNetworkType
-    ? [{ networkType: photo.pipeNetworkType, configuration: photo.tramo || '', meters: photo.metraje || 0 }]
-    : [];
+const getPipeConduits = (photo: InspectionPhoto) => {
+  if (photo.pipeConduits?.length) return photo.pipeConduits;
+  const netInfo = getPhotoNetworkInfo(photo);
+  const resolvedNet: PipeNetworkType = photo.pipeNetworkType || (
+    netInfo.primary === 'DATOS' ? 'datos' :
+    netInfo.primary === 'BT' ? 'baja_tension' : 'media_tension'
+  );
+  return [{ networkType: resolvedNet, configuration: photo.tramo || '', meters: photo.metraje || 0 }];
+};
 
 export const getPhotoPipeMeters = (photo: InspectionPhoto): number => {
   const conduits = photo.pipeConduits;
@@ -125,8 +129,9 @@ export const getWorkElementStatistics = (photos: InspectionPhoto[]): WorkElement
 
     if (elementType === 'camara') {
       totalCameras += 1;
-      const cameraType = normalizeCameraType(photo.cameraType);
-      if (cameraType) addToBreakdown(cameras[cameraType], photo.executionStatus);
+      const netInfo = getPhotoNetworkInfo(photo);
+      const cameraType: WorkNetwork = netInfo.primary === 'DATOS' ? 'Datos' : netInfo.primary === 'BT' ? 'BT' : 'MT';
+      addToBreakdown(cameras[cameraType], photo.executionStatus);
 
       if (photo.executionStatus === 'Terminado' || progress === 100) {
         cameraCompleted += 1;

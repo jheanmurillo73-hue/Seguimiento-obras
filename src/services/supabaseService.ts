@@ -1,5 +1,23 @@
 import { getSupabaseClient, isSupabaseConfigured, getActiveSupabaseConfig } from '../lib/supabase';
-import { ActaItem, EvidenceTimelineEntry, InspectionPhoto, InspectorProfile, ActivityItem, InspectionCollection, AppSettings, AppModule, AppRole, UserAccess, ElementType, getElementType, normalizeEvidenceTimeline, normalizePipeConduits } from '../types';
+import {
+  ActaItem,
+  EvidenceTimelineEntry,
+  InspectionPhoto,
+  InspectorProfile,
+  ActivityItem,
+  InspectionCollection,
+  AppSettings,
+  AppModule,
+  AppRole,
+  UserAccess,
+  ElementType,
+  getElementType,
+  normalizeEvidenceTimeline,
+  normalizePipeConduits,
+  getPhotoNetworkInfo,
+  getPipeNetworkOption,
+  PipeNetworkType,
+} from '../types';
 import { ALL_OPERATIONAL_MODULES, createFallbackAccess, isPrimaryAdmin, normalizeModules } from '../lib/accessControl';
 import { removeEvidenceFromSupabase, uploadEvidenceToSupabase } from './supabaseStorageService';
 
@@ -30,6 +48,87 @@ const parseEvidenceTimeline = (value: unknown, fallback?: string, fallbackDate?:
     }
   }
   return fallback ? [{ url: fallback, capturedAt: defaultDate }] : [];
+};
+
+const serializePhotoToSupabaseRow = (
+  photo: InspectionPhoto,
+  cloudImageUrl: string,
+  cloudEvidenceUrls: string[],
+  userId?: string
+) => {
+  const elementType = getElementType(photo);
+  const networkInfo = getPhotoNetworkInfo(photo);
+  const isPipe = elementType === 'tuberia';
+
+  const resolvedPipeNetwork: PipeNetworkType | null = isPipe
+    ? (photo.pipeNetworkType || photo.pipeConduits?.[0]?.networkType || (
+        networkInfo.primary === 'DATOS' ? 'datos' :
+        networkInfo.primary === 'BT' ? 'baja_tension' : 'media_tension'
+      ))
+    : null;
+
+  const resolvedPipeConduits = isPipe
+    ? (Array.isArray(photo.pipeConduits) && photo.pipeConduits.length > 0
+        ? normalizePipeConduits(photo.pipeConduits)
+        : [{
+            id: `conduit-${photo.id}`,
+            networkType: resolvedPipeNetwork || 'media_tension',
+            configuration: photo.tramo || '',
+            meters: photo.metraje !== undefined ? Number(photo.metraje) : 0,
+          }])
+    : [];
+
+  const resolvedCameraType = elementType === 'camara'
+    ? (photo.cameraType || networkInfo.primary || 'MT')
+    : null;
+
+  return {
+    id: photo.id,
+    display_id: photo.displayId,
+    name: photo.name,
+    image_url: cloudImageUrl,
+    image_urls: serializeEvidenceTimeline(photo, cloudEvidenceUrls),
+    date: photo.date,
+    date_raw: photo.dateRaw,
+    status: photo.status,
+    execution_status: photo.executionStatus,
+    category: photo.category,
+    category_label: photo.categoryLabel,
+    location: photo.location,
+    element_type: elementType,
+    camera_code: elementType === 'camara' ? photo.cameraCode || 'SB850' : null,
+    camera_type: resolvedCameraType,
+    acta: photo.acta || null,
+    acta_item: photo.actaItems?.length ? photo.actaItems : photo.actaItem || null,
+    show_acta_label: photo.showActaLabel ?? true,
+    acta_label_position: photo.actaLabelPosition || 'derecha',
+    tramo: photo.tramo || null,
+    metraje: photo.metraje !== undefined ? String(photo.metraje) : null,
+    pipe_network_type: resolvedPipeNetwork,
+    pipe_color: isPipe ? (photo.pipeColor || getPipeNetworkOption(resolvedPipeNetwork || undefined).color) : null,
+    pipe_conduits: resolvedPipeConduits,
+    plan_area: photo.planArea || 'civil',
+    electrical_type: photo.electricalType || null,
+    electrical_color: photo.electricalColor || null,
+    cable_type: photo.cableType || null,
+    cable_gauge: photo.cableGauge || null,
+    cable_meters: photo.cableMeters !== undefined ? String(photo.cableMeters) : null,
+    inspector_name: photo.inspectorName,
+    inspector_id: photo.inspectorId,
+    inspector_avatar: photo.inspectorAvatar,
+    type: photo.type,
+    verified: photo.verified,
+    field_notes: photo.fieldNotes || '',
+    requires_immediate_action: photo.requiresImmediateAction || false,
+    file_size: photo.fileSize || '1.4 MB',
+    resolution: photo.resolution || '1920x1080',
+    plan_x: photo.planX ?? null,
+    plan_y: photo.planY ?? null,
+    plan_end_x: photo.planEndX ?? null,
+    plan_end_y: photo.planEndY ?? null,
+    user_id: userId || photo.inspectorId,
+    updated_at: new Date().toISOString(),
+  };
 };
 
 const serializeEvidenceTimeline = (photo: InspectionPhoto, urls: string[]): string => {
@@ -305,53 +404,8 @@ export const supabaseService = {
         return { success: false, stage: 'storage', message };
       }
       const cloudImageUrl = cloudEvidenceUrls[0] || (photo.imageUrl.startsWith('data:image/') ? '' : photo.imageUrl);
-      const { error } = await client.from('inspection_photos').upsert({
-        id: photo.id,
-        display_id: photo.displayId,
-        name: photo.name,
-        image_url: cloudImageUrl,
-        image_urls: serializeEvidenceTimeline(photo, cloudEvidenceUrls),
-        date: photo.date,
-        date_raw: photo.dateRaw,
-        status: photo.status,
-        execution_status: photo.executionStatus,
-        category: photo.category,
-        category_label: photo.categoryLabel,
-        location: photo.location,
-        element_type: getElementType(photo),
-        camera_code: getElementType(photo) === 'camara' ? photo.cameraCode || 'SB850' : null,
-        camera_type: getElementType(photo) === 'camara' ? photo.cameraType || 'MT' : null,
-        acta: photo.acta || null,
-        acta_item: photo.actaItems?.length ? photo.actaItems : photo.actaItem || null,
-        show_acta_label: photo.showActaLabel ?? true,
-        acta_label_position: photo.actaLabelPosition || 'derecha',
-        tramo: photo.tramo || null,
-        metraje: photo.metraje !== undefined ? String(photo.metraje) : null,
-        pipe_network_type: photo.pipeNetworkType || null,
-        pipe_color: photo.pipeColor || null,
-        pipe_conduits: photo.pipeConduits || [],
-        plan_area: photo.planArea || 'civil',
-        electrical_type: photo.electricalType || null,
-        electrical_color: photo.electricalColor || null,
-        cable_type: photo.cableType || null,
-        cable_gauge: photo.cableGauge || null,
-        cable_meters: photo.cableMeters !== undefined ? String(photo.cableMeters) : null,
-        inspector_name: photo.inspectorName,
-        inspector_id: photo.inspectorId,
-        inspector_avatar: photo.inspectorAvatar,
-        type: photo.type,
-        verified: photo.verified,
-        field_notes: photo.fieldNotes || '',
-        requires_immediate_action: photo.requiresImmediateAction || false,
-        file_size: photo.fileSize || '1.4 MB',
-        resolution: photo.resolution || '1920x1080',
-        plan_x: photo.planX ?? null,
-        plan_y: photo.planY ?? null,
-        plan_end_x: photo.planEndX ?? null,
-        plan_end_y: photo.planEndY ?? null,
-        user_id: userId || photo.inspectorId,
-        updated_at: new Date().toISOString(),
-      });
+      const row = serializePhotoToSupabaseRow(photo, cloudImageUrl, cloudEvidenceUrls, userId);
+      const { error } = await client.from('inspection_photos').upsert(row);
 
       if (error) {
         console.warn('Supabase upsert note:', error.message);
@@ -380,53 +434,7 @@ export const supabaseService = {
     const records = photos.map((photo, index) => {
       const cloudEvidenceUrls = cloudEvidenceByPhoto[index] || [];
       const cloudImageUrl = cloudEvidenceUrls[0] || (photo.imageUrl.startsWith('data:image/') ? '' : photo.imageUrl);
-      return {
-      id: photo.id,
-      display_id: photo.displayId,
-      name: photo.name,
-      image_url: cloudImageUrl,
-      image_urls: serializeEvidenceTimeline(photo, cloudEvidenceUrls),
-      date: photo.date,
-      date_raw: photo.dateRaw,
-      status: photo.status,
-      execution_status: photo.executionStatus,
-      category: photo.category,
-      category_label: photo.categoryLabel,
-      location: photo.location,
-      element_type: getElementType(photo),
-      camera_code: getElementType(photo) === 'camara' ? photo.cameraCode || 'SB850' : null,
-      camera_type: getElementType(photo) === 'camara' ? photo.cameraType || 'MT' : null,
-      acta: photo.acta || null,
-      acta_item: photo.actaItem || null,
-      show_acta_label: photo.showActaLabel ?? true,
-      acta_label_position: photo.actaLabelPosition || 'derecha',
-      tramo: photo.tramo || null,
-      metraje: photo.metraje !== undefined ? String(photo.metraje) : null,
-      pipe_network_type: photo.pipeNetworkType || null,
-      pipe_color: photo.pipeColor || null,
-      pipe_conduits: photo.pipeConduits || [],
-      plan_area: photo.planArea || 'civil',
-      electrical_type: photo.electricalType || null,
-      electrical_color: photo.electricalColor || null,
-      cable_type: photo.cableType || null,
-      cable_gauge: photo.cableGauge || null,
-      cable_meters: photo.cableMeters !== undefined ? String(photo.cableMeters) : null,
-      inspector_name: photo.inspectorName,
-      inspector_id: photo.inspectorId,
-      inspector_avatar: photo.inspectorAvatar,
-      type: photo.type,
-      verified: photo.verified,
-      field_notes: photo.fieldNotes || '',
-      requires_immediate_action: photo.requiresImmediateAction || false,
-      file_size: photo.fileSize || '1.4 MB',
-      resolution: photo.resolution || '1920x1080',
-      plan_x: photo.planX ?? null,
-      plan_y: photo.planY ?? null,
-      plan_end_x: photo.planEndX ?? null,
-      plan_end_y: photo.planEndY ?? null,
-      user_id: userId || photo.inspectorId,
-      updated_at: new Date().toISOString(),
-      };
+      return serializePhotoToSupabaseRow(photo, cloudImageUrl, cloudEvidenceUrls, userId);
     });
 
       const { error } = await client.from('inspection_photos').upsert(records);
@@ -473,6 +481,33 @@ export const supabaseService = {
             electricalType: item.electrical_type || undefined,
             planArea: item.plan_area || undefined,
           });
+        const parsedConduits = parsePipeConduits(item.pipe_conduits);
+        const resolvedPipeNetworkType: PipeNetworkType = ['media_tension', 'baja_tension', 'datos'].includes(item.pipe_network_type)
+          ? item.pipe_network_type
+          : (parsedConduits[0]?.networkType || (
+              item.camera_type === 'MT' ? 'media_tension' :
+              item.camera_type === 'Datos' || (item.camera_type || '').toUpperCase() === 'DATOS' ? 'datos' :
+              item.camera_type === 'BT' ? 'baja_tension' :
+              (item.name || '').toLowerCase().includes('dato') || (item.field_notes || '').toLowerCase().includes('dato') ? 'datos' :
+              (item.name || '').toLowerCase().includes('baja') || (item.field_notes || '').toLowerCase().includes('baja') ? 'baja_tension' :
+              'media_tension'
+            ));
+
+        const finalPipeConduits = elementType === 'tuberia'
+          ? (parsedConduits.length > 0
+              ? parsedConduits
+              : [{
+                  id: `conduit-${item.id}`,
+                  networkType: resolvedPipeNetworkType,
+                  configuration: item.tramo || '',
+                  meters: item.metraje !== undefined ? Number(item.metraje) : 0,
+                }])
+          : undefined;
+
+        const resolvedCameraType = elementType === 'camara'
+          ? (item.camera_type || 'MT')
+          : undefined;
+
         return {
         id: item.id,
         displayId: item.display_id || item.id,
@@ -489,7 +524,7 @@ export const supabaseService = {
         location: item.location || 'Bodega 1',
         elementType,
         cameraCode: elementType === 'camara' ? item.camera_code || 'SB850' : undefined,
-        cameraType: elementType === 'camara' ? item.camera_type || 'MT' : undefined,
+        cameraType: resolvedCameraType,
         acta: item.acta || undefined,
         actaItem: parseActaItems(item.acta_item)[0],
         actaItems: parseActaItems(item.acta_item),
@@ -499,13 +534,11 @@ export const supabaseService = {
           : 'derecha',
         tramo: item.tramo || undefined,
         metraje: item.metraje || undefined,
-        pipeNetworkType: ['media_tension', 'baja_tension', 'datos'].includes(item.pipe_network_type)
-          ? item.pipe_network_type
-          : undefined,
+        pipeNetworkType: elementType === 'tuberia' ? resolvedPipeNetworkType : undefined,
         pipeColor: typeof item.pipe_color === 'string' && /^#[0-9a-fA-F]{6}$/.test(item.pipe_color)
           ? item.pipe_color
-          : undefined,
-        pipeConduits: parsePipeConduits(item.pipe_conduits),
+          : (elementType === 'tuberia' ? getPipeNetworkOption(resolvedPipeNetworkType).color : undefined),
+        pipeConduits: finalPipeConduits,
         planArea: item.plan_area === 'electrical_mt' || item.plan_area === 'electrical_bt' || item.plan_area === 'electrical_lighting'
           ? item.plan_area
           : item.plan_area === 'electrical' ? 'electrical_mt' : 'civil',
@@ -852,6 +885,241 @@ ALTER TABLE public.inspection_photos ALTER COLUMN element_type SET NOT NULL;
 ALTER TABLE public.inspection_photos DROP CONSTRAINT IF EXISTS inspection_photos_element_type_check;
 ALTER TABLE public.inspection_photos ADD CONSTRAINT inspection_photos_element_type_check CHECK (element_type IN ('caja', 'camara', 'tuberia', 'electrico'));
 
+-- Columnas auxiliares para visualización directa en Supabase Table Editor
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS has_media_tension BOOLEAN DEFAULT false;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS has_baja_tension BOOLEAN DEFAULT false;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS has_datos BOOLEAN DEFAULT false;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS tramo_mt TEXT;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS tramo_bt TEXT;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS tramo_datos TEXT;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS redes_list TEXT;
+
+-- Sincronizar columnas auxiliares y tipo de red desde los ductos estructurados (pipe_conduits)
+UPDATE public.inspection_photos
+SET
+  camera_type = CASE WHEN element_type = 'tuberia' THEN NULL ELSE camera_type END,
+  has_media_tension = (pipe_conduits::text ILIKE '%media_tension%' OR pipe_network_type = 'media_tension'),
+  has_baja_tension = (pipe_conduits::text ILIKE '%baja_tension%' OR pipe_network_type = 'baja_tension'),
+  has_datos = (pipe_conduits::text ILIKE '%datos%' OR pipe_network_type = 'datos' OR lower(name) LIKE '%dato%'),
+  redes_list = TRIM(BOTH ', ' FROM CONCAT(
+    CASE WHEN pipe_conduits::text ILIKE '%media_tension%' OR pipe_network_type = 'media_tension' THEN 'MT, ' ELSE '' END,
+    CASE WHEN pipe_conduits::text ILIKE '%baja_tension%' OR pipe_network_type = 'baja_tension' THEN 'BT, ' ELSE '' END,
+    CASE WHEN pipe_conduits::text ILIKE '%datos%' OR pipe_network_type = 'datos' OR lower(name) LIKE '%dato%' THEN 'DATOS' ELSE '' END
+  ))
+WHERE element_type = 'tuberia' OR tramo IS NOT NULL;
+
+-- ============================================================
+-- VISTAS DE TRAMOS Y CANALIZACIONES DESGLOSADAS (MT, BT y DATOS)
+-- Desglosan cada ducto individual de pipe_conduits en una fila propia.
+-- Esto garantiza que los tramos de DATOS y MEDIA TENSIÓN sean visibles y consultables individualmente en Supabase.
+-- ============================================================
+
+CREATE OR REPLACE VIEW public.v_tramos_conduits AS
+SELECT
+  p.id AS photo_id,
+  p.display_id,
+  p.name AS tramo_nombre,
+  c.id AS conduit_id,
+  c."networkType" AS red_codigo,
+  CASE
+    WHEN c."networkType" = 'media_tension' THEN 'Media Tensión (MT)'
+    WHEN c."networkType" = 'baja_tension' THEN 'Baja Tensión (BT)'
+    WHEN c."networkType" = 'datos' THEN 'Datos / Control'
+    ELSE COALESCE(c."networkType", 'Media Tensión (MT)')
+  END AS red_label,
+  c.configuration AS diametro_configuracion,
+  COALESCE(NULLIF(c.meters, '')::numeric, NULLIF(p.metraje, '')::numeric, 0) AS metraje_metros,
+  p.execution_status,
+  p.acta,
+  p.location,
+  p.inspector_name,
+  p.date,
+  p.created_at
+FROM public.inspection_photos p,
+LATERAL jsonb_to_recordset(
+  CASE
+    WHEN jsonb_typeof(p.pipe_conduits) = 'array' AND jsonb_array_length(p.pipe_conduits) > 0
+    THEN p.pipe_conduits
+    ELSE jsonb_build_array(jsonb_build_object(
+      'id', 'c-' || p.id,
+      'networkType', COALESCE(p.pipe_network_type, 'media_tension'),
+      'configuration', COALESCE(p.tramo, 'Sin medida'),
+      'meters', COALESCE(p.metraje, '0')
+    ))
+  END
+) AS c("id" text, "networkType" text, "configuration" text, "meters" text)
+WHERE p.element_type = 'tuberia' OR p.tramo IS NOT NULL;
+
+-- Vista unificada de compatibilidad v_tramos_redes
+CREATE OR REPLACE VIEW public.v_tramos_redes AS
+SELECT * FROM public.v_tramos_conduits;
+
+-- Vista exclusiva de Tramos y Ductos de DATOS
+CREATE OR REPLACE VIEW public.v_tramos_datos AS
+SELECT * FROM public.v_tramos_conduits
+WHERE red_codigo = 'datos';
+
+-- Vista exclusiva de Tramos y Ductos de MEDIA TENSIÓN
+CREATE OR REPLACE VIEW public.v_tramos_media_tension AS
+SELECT * FROM public.v_tramos_conduits
+WHERE red_codigo = 'media_tension';
+
+-- Vista exclusiva de Tramos y Ductos de BAJA TENSIÓN
+CREATE OR REPLACE VIEW public.v_tramos_baja_tension AS
+SELECT * FROM public.v_tramos_conduits
+WHERE red_codigo = 'baja_tension';
+
+-- Vista analítica de Resumen de Metrados por Red
+CREATE OR REPLACE VIEW public.v_resumen_redes AS
+SELECT
+  red_label,
+  red_codigo,
+  COUNT(*) AS total_ductos,
+  ROUND(SUM(metraje_metros)::numeric, 2) AS total_metros,
+  COUNT(DISTINCT photo_id) AS total_tramos_fisicos
+FROM public.v_tramos_conduits
+GROUP BY red_label, red_codigo
+ORDER BY red_label;
+
+-- ============================================================
+-- VISTAS RELACIONALES Y RESÚMENES DE CÁMARAS POR INTERSECCIÓN / SECTOR
+-- Solución para evitar flat table y permitir consultas estructuradas por:
+-- Sector (Intersección 1, Intersección 2, Troncal), Tipo de Red (MT, BT, Datos),
+-- Estado de Ejecución (No iniciado / Pendiente, En proceso, Terminado), Fecha y Acta.
+-- ============================================================
+
+-- 1. Vista de Inventario Normalizado de Cámaras (con Sector y Red estructurados)
+CREATE OR REPLACE VIEW public.v_camaras_inventario AS
+SELECT
+  p.id AS photo_id,
+  p.display_id,
+  p.name AS nombre_completo,
+  p.camera_code AS codigo_camara,
+  CASE
+    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'I1'
+    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'I2'
+    WHEN p.name ~* 'TRONCAL' THEN 'TRONCAL'
+    ELSE 'OTRO'
+  END AS sector_codigo,
+  CASE
+    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'Intersección 1'
+    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'Intersección 2'
+    WHEN p.name ~* 'TRONCAL' THEN 'Troncal Principal'
+    ELSE 'Otros Sectores'
+  END AS sector_nombre,
+  CASE
+    WHEN p.camera_type ILIKE '%dato%' OR p.camera_type = 'D' THEN 'DATOS'
+    WHEN p.camera_type = 'BT' THEN 'BT'
+    ELSE 'MT'
+  END AS tipo_red,
+  CASE
+    WHEN p.camera_type ILIKE '%dato%' OR p.camera_type = 'D' THEN 'Datos / Control'
+    WHEN p.camera_type = 'BT' THEN 'Baja Tensión (BT)'
+    ELSE 'Media Tensión (MT)'
+  END AS red_label,
+  COALESCE(NULLIF(p.execution_status, ''), 'No iniciado') AS estado_ejecucion,
+  COALESCE(NULLIF(p.acta, ''), 'Sin Acta') AS acta,
+  p.date AS fecha_inspeccion,
+  p.location AS bodega_ubicacion,
+  p.inspector_name,
+  p.latitude,
+  p.longitude,
+  CASE
+    WHEN p.image_urls IS NOT NULL AND p.image_urls != '' AND p.image_urls != '[]' THEN true
+    ELSE false
+  END AS tiene_fotos,
+  p.created_at
+FROM public.inspection_photos p
+WHERE p.element_type = 'camara';
+
+-- 2. Vista de Resumen Multidimensional (Intersección, Tipo MT/BT/DATOS, Fecha, Acta y Estado)
+CREATE OR REPLACE VIEW public.v_resumen_camaras_interseccion AS
+SELECT
+  CASE
+    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'Intersección 1'
+    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'Intersección 2'
+    WHEN p.name ~* 'TRONCAL' THEN 'Troncal Principal'
+    ELSE 'Otros Sectores'
+  END AS sector,
+  CASE
+    WHEN p.camera_type ILIKE '%dato%' OR p.camera_type = 'D' THEN 'DATOS'
+    WHEN p.camera_type = 'BT' THEN 'BT'
+    ELSE 'MT'
+  END AS tipo_red,
+  COALESCE(NULLIF(p.execution_status, ''), 'No iniciado') AS estado_ejecucion,
+  COALESCE(NULLIF(p.acta, ''), 'Sin Acta') AS acta,
+  COALESCE(NULLIF(p.date, ''), 'Sin Fecha') AS fecha_inspeccion,
+  COUNT(*) AS total_camaras,
+  COUNT(CASE WHEN p.image_urls IS NOT NULL AND p.image_urls != '' AND p.image_urls != '[]' THEN 1 END) AS con_fotos,
+  COUNT(CASE WHEN p.image_urls IS NULL OR p.image_urls = '' OR p.image_urls = '[]' THEN 1 END) AS pendientes_fotos
+FROM public.inspection_photos p
+WHERE p.element_type = 'camara'
+GROUP BY
+  sector,
+  tipo_red,
+  estado_ejecucion,
+  acta,
+  fecha_inspeccion
+ORDER BY
+  sector,
+  tipo_red,
+  estado_ejecucion;
+
+-- 3. Vista Matriz Ejecutiva por Sector (Conteo instantáneo de cámaras por red y avance)
+CREATE OR REPLACE VIEW public.v_matriz_camaras_por_sector AS
+SELECT
+  CASE
+    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'Intersección 1'
+    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'Intersección 2'
+    WHEN p.name ~* 'TRONCAL' THEN 'Troncal Principal'
+    ELSE 'Otros Sectores'
+  END AS sector,
+  COUNT(*) AS total_camaras,
+  -- Por Tipo de Red
+  COUNT(CASE WHEN p.camera_type = 'MT' OR (p.camera_type IS NULL AND p.element_type = 'camara') THEN 1 END) AS camaras_mt,
+  COUNT(CASE WHEN p.camera_type = 'BT' THEN 1 END) AS camaras_bt,
+  COUNT(CASE WHEN p.camera_type ILIKE '%dato%' OR p.camera_type = 'D' THEN 1 END) AS camaras_datos,
+  -- Por Estado de Ejecución
+  COUNT(CASE WHEN p.execution_status = 'No iniciado' OR p.execution_status IS NULL OR p.execution_status = '' THEN 1 END) AS pendientes_no_iniciado,
+  COUNT(CASE WHEN p.execution_status = 'En proceso' THEN 1 END) AS en_progreso,
+  COUNT(CASE WHEN p.execution_status = 'Terminado' THEN 1 END) AS terminadas,
+  -- Por Acta
+  COUNT(CASE WHEN p.acta = 'Acta 1' THEN 1 END) AS en_acta_1,
+  COUNT(CASE WHEN p.acta = 'Acta 2' THEN 1 END) AS en_acta_2,
+  COUNT(CASE WHEN p.acta = 'Acta 3' THEN 1 END) AS en_acta_3,
+  COUNT(CASE WHEN p.acta IS NULL OR p.acta = '' THEN 1 END) AS sin_acta,
+  -- Porcentaje de Avance Físico Estimado
+  ROUND(
+    (COUNT(CASE WHEN p.execution_status = 'Terminado' THEN 1 END) * 100.0 +
+     COUNT(CASE WHEN p.execution_status = 'En proceso' THEN 1 END) * 50.0) /
+    NULLIF(COUNT(*), 0),
+    1
+  ) AS porcentaje_avance_estimado
+FROM public.inspection_photos p
+WHERE p.element_type = 'camara'
+GROUP BY sector
+ORDER BY sector;
+
+-- 4. Vista de Resumen General por Acta (Cámaras, Tuberías y Metros Lineales)
+CREATE OR REPLACE VIEW public.v_resumen_global_por_acta AS
+SELECT
+  COALESCE(NULLIF(p.acta, ''), 'Sin Acta Asignada') AS acta,
+  CASE
+    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'Intersección 1'
+    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'Intersección 2'
+    WHEN p.name ~* 'TRONCAL' THEN 'Troncal Principal'
+    ELSE 'Otros Sectores'
+  END AS sector,
+  COUNT(CASE WHEN p.element_type = 'camara' THEN 1 END) AS total_camaras,
+  COUNT(CASE WHEN p.element_type = 'tuberia' THEN 1 END) AS total_tramos,
+  ROUND(SUM(CASE WHEN p.element_type = 'tuberia' THEN COALESCE(NULLIF(p.metraje, '')::numeric, 0) ELSE 0 END), 2) AS metros_tuberias,
+  COUNT(CASE WHEN p.execution_status = 'Terminado' THEN 1 END) AS elementos_terminados,
+  COUNT(CASE WHEN p.execution_status = 'En proceso' THEN 1 END) AS elementos_en_proceso,
+  COUNT(CASE WHEN p.execution_status = 'No iniciado' OR p.execution_status IS NULL THEN 1 END) AS elementos_pendientes
+FROM public.inspection_photos p
+GROUP BY acta, sector
+ORDER BY acta, sector;
+
 -- 3. TABLA DE REGISTRO DE ACTIVIDADES Y AUDITORÍA (inspection_activities)
 CREATE TABLE IF NOT EXISTS public.inspection_activities (
   id TEXT PRIMARY KEY,
@@ -900,6 +1168,8 @@ CREATE INDEX IF NOT EXISTS idx_inspection_photos_execution_status ON public.insp
 CREATE INDEX IF NOT EXISTS idx_inspection_photos_status ON public.inspection_photos (status);
 CREATE INDEX IF NOT EXISTS idx_inspection_photos_location ON public.inspection_photos (location);
 CREATE INDEX IF NOT EXISTS idx_inspection_photos_camera_code ON public.inspection_photos (camera_code);
+CREATE INDEX IF NOT EXISTS idx_inspection_photos_camera_type ON public.inspection_photos (camera_type);
+CREATE INDEX IF NOT EXISTS idx_inspection_photos_pipe_network ON public.inspection_photos (pipe_network_type);
 CREATE INDEX IF NOT EXISTS idx_inspection_photos_element_type ON public.inspection_photos (element_type);
 CREATE INDEX IF NOT EXISTS idx_inspection_photos_inspector_id ON public.inspection_photos (inspector_id);
 CREATE INDEX IF NOT EXISTS idx_activities_created_at ON public.inspection_activities (created_at DESC);

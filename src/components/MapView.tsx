@@ -159,6 +159,53 @@ const isCable = (photo: InspectionPhoto) => photo.electricalType === 'cableado';
 const NO_STARTED_MARKER_COLOR = '#64748b';
 const isNotStarted = (photo: InspectionPhoto) => photo.executionStatus === 'No iniciado';
 
+// Helper geometry for Area Selection (marquee bounding box)
+function checkSegmentsIntersect(
+  x1: number, y1: number, x2: number, y2: number,
+  x3: number, y3: number, x4: number, y4: number
+): boolean {
+  const ccw = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) => {
+    return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax);
+  };
+  return (
+    ccw(x1, y1, x3, y3, x4, y4) !== ccw(x2, y2, x3, y3, x4, y4) &&
+    ccw(x1, y1, x2, y2, x3, y3) !== ccw(x1, y1, x2, y2, x4, y4)
+  );
+}
+
+function doesSegmentIntersectBox(
+  x1: number, y1: number, x2: number, y2: number,
+  minX: number, maxX: number, minY: number, maxY: number
+): boolean {
+  return (
+    checkSegmentsIntersect(x1, y1, x2, y2, minX, minY, maxX, minY) ||
+    checkSegmentsIntersect(x1, y1, x2, y2, maxX, minY, maxX, maxY) ||
+    checkSegmentsIntersect(x1, y1, x2, y2, maxX, maxY, minX, maxY) ||
+    checkSegmentsIntersect(x1, y1, x2, y2, minX, maxY, minX, minY)
+  );
+}
+
+function isPhotoInAreaBounds(
+  photo: InspectionPhoto,
+  minX: number, maxX: number, minY: number, maxY: number
+): boolean {
+  const isLine = getElementType(photo) === 'tuberia' || isCable(photo);
+  if (isLine && typeof photo.planX === 'number' && typeof photo.planY === 'number' && typeof photo.planEndX === 'number' && typeof photo.planEndY === 'number') {
+    const p1In = photo.planX >= minX && photo.planX <= maxX && photo.planY >= minY && photo.planY <= maxY;
+    const p2In = photo.planEndX >= minX && photo.planEndX <= maxX && photo.planEndY >= minY && photo.planEndY <= maxY;
+    const midX = (photo.planX + photo.planEndX) / 2;
+    const midY = (photo.planY + photo.planEndY) / 2;
+    const midIn = midX >= minX && midX <= maxX && midY >= minY && midY <= maxY;
+    if (p1In || p2In || midIn) return true;
+    return doesSegmentIntersectBox(photo.planX, photo.planY, photo.planEndX, photo.planEndY, minX, maxX, minY, maxY);
+  }
+
+  if (typeof photo.planX === 'number' && typeof photo.planY === 'number') {
+    return photo.planX >= minX && photo.planX <= maxX && photo.planY >= minY && photo.planY <= maxY;
+  }
+  return false;
+}
+
 const isElectricalPhoto = (photo: InspectionPhoto) =>
   photo.planArea !== 'civil' && isElectricalElementType(photo.electricalType);
 
@@ -269,6 +316,13 @@ export const MapView: React.FC<MapViewProps> = ({
   const [hoveredPlanPhotoId, setHoveredPlanPhotoId] = useState<string | null>(null);
   const [isMultipleSelectionMode, setIsMultipleSelectionMode] = useState(false);
   const [selectedPlanPhotoIds, setSelectedPlanPhotoIds] = useState<string[]>([]);
+  const [isAreaSelectionMode, setIsAreaSelectionMode] = useState(false);
+  const [areaSelectionBox, setAreaSelectionBox] = useState<{
+    start: PlanPoint;
+    current: PlanPoint;
+  } | null>(null);
+  const [isDraggingArea, setIsDraggingArea] = useState(false);
+  const [lastSelectedAreaCount, setLastSelectedAreaCount] = useState<number | null>(null);
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
   const [photosPendingDeletion, setPhotosPendingDeletion] = useState<InspectionPhoto[]>([]);
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
@@ -569,7 +623,42 @@ export const MapView: React.FC<MapViewProps> = ({
 
   const exitMultipleSelection = () => {
     setIsMultipleSelectionMode(false);
+    setIsAreaSelectionMode(false);
+    setAreaSelectionBox(null);
+    setIsDraggingArea(false);
     setSelectedPlanPhotoIds([]);
+    setLastSelectedAreaCount(null);
+  };
+
+  const areaSelectedPhotoIds = useMemo(() => {
+    if (!areaSelectionBox || !isDraggingArea) return [];
+    const minX = Math.min(areaSelectionBox.start.planX, areaSelectionBox.current.planX);
+    const maxX = Math.max(areaSelectionBox.start.planX, areaSelectionBox.current.planX);
+    const minY = Math.min(areaSelectionBox.start.planY, areaSelectionBox.current.planY);
+    const maxY = Math.max(areaSelectionBox.start.planY, areaSelectionBox.current.planY);
+
+    if (Math.abs(maxX - minX) < 0.2 && Math.abs(maxY - minY) < 0.2) return [];
+
+    return positionedPhotos
+      .filter((photo) => isPhotoInAreaBounds(photo, minX, maxX, minY, maxY))
+      .map((photo) => photo.id);
+  }, [areaSelectionBox, isDraggingArea, positionedPhotos]);
+
+  const toggleAreaSelectionMode = () => {
+    if (isAreaSelectionMode) {
+      setIsAreaSelectionMode(false);
+      setAreaSelectionBox(null);
+      setIsDraggingArea(false);
+      return;
+    }
+    setPlacement(null);
+    setCreationMode(null);
+    setPipeStart(null);
+    setPipePreview(null);
+    setSelectedPlanPhotoId(null);
+    setIsHandToolActive(false);
+    setIsAreaSelectionMode(true);
+    setIsMultipleSelectionMode(true);
   };
 
   const requestReturnToAreas = () => {
@@ -1416,7 +1505,7 @@ export const MapView: React.FC<MapViewProps> = ({
           type="button"
           onClick={toggleMultipleSelectionMode}
           className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[11px] font-bold shadow-sm transition ${
-            isMultipleSelectionMode
+            isMultipleSelectionMode && !isAreaSelectionMode
               ? 'border-[#004d99] bg-[#004d99] text-white shadow-xs'
               : 'border-[#9fb5c5] bg-white text-[#173f58] hover:bg-[#eaf3f8]'
           }`}
@@ -1425,6 +1514,20 @@ export const MapView: React.FC<MapViewProps> = ({
         >
           <span className="material-symbols-outlined text-[16px]">select_all</span>
           Ajuste Grupal
+        </button>
+        <button
+          type="button"
+          onClick={toggleAreaSelectionMode}
+          className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[11px] font-bold shadow-sm transition ${
+            isAreaSelectionMode
+              ? 'border-[#004d99] bg-[#004d99] text-white shadow-xs ring-2 ring-[#004d99]/30'
+              : 'border-[#9fb5c5] bg-white text-[#173f58] hover:bg-[#eaf3f8]'
+          }`}
+          title="Seleccionar múltiples elementos mediante un recuadro de arrastre"
+          aria-pressed={isAreaSelectionMode}
+        >
+          <span className="material-symbols-outlined text-[16px]">highlight_alt</span>
+          Selección de Área
         </button>
         <button
           type="button"
@@ -1524,6 +1627,80 @@ export const MapView: React.FC<MapViewProps> = ({
                 </div>
               )}
 
+              {isAreaSelectionMode && (
+                <div
+                  className="absolute inset-0 z-35 touch-none cursor-crosshair"
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    const pos = getPlanPosition(bounds, event.clientX, event.clientY);
+                    setAreaSelectionBox({ start: pos, current: pos });
+                    setIsDraggingArea(true);
+                  }}
+                  onPointerMove={(event) => {
+                    if (!isDraggingArea || !areaSelectionBox) return;
+                    event.preventDefault();
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    const pos = getPlanPosition(bounds, event.clientX, event.clientY);
+                    setAreaSelectionBox((previous) => (previous ? { ...previous, current: pos } : null));
+                  }}
+                  onPointerUp={(event) => {
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                      event.currentTarget.releasePointerCapture(event.pointerId);
+                    }
+                    setIsDraggingArea(false);
+                    if (areaSelectionBox) {
+                      const minX = Math.min(areaSelectionBox.start.planX, areaSelectionBox.current.planX);
+                      const maxX = Math.max(areaSelectionBox.start.planX, areaSelectionBox.current.planX);
+                      const minY = Math.min(areaSelectionBox.start.planY, areaSelectionBox.current.planY);
+                      const maxY = Math.max(areaSelectionBox.start.planY, areaSelectionBox.current.planY);
+
+                      if (Math.abs(maxX - minX) > 0.4 || Math.abs(maxY - minY) > 0.4) {
+                        const matchedIds = positionedPhotos
+                          .filter((p) => isPhotoInAreaBounds(p, minX, maxX, minY, maxY))
+                          .map((p) => p.id);
+
+                        if (matchedIds.length > 0) {
+                          setSelectedPlanPhotoIds(matchedIds);
+                          setIsMultipleSelectionMode(true);
+                          setLastSelectedAreaCount(matchedIds.length);
+                          setIsBulkEditModalOpen(true);
+                        }
+                      }
+                    }
+                    setAreaSelectionBox(null);
+                  }}
+                  onPointerCancel={(event) => {
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                      event.currentTarget.releasePointerCapture(event.pointerId);
+                    }
+                    setIsDraggingArea(false);
+                    setAreaSelectionBox(null);
+                  }}
+                  aria-label="Arrastra un recuadro para seleccionar elementos en el plano"
+                  role="application"
+                />
+              )}
+
+              {areaSelectionBox && isDraggingArea && (
+                <div
+                  className="pointer-events-none absolute z-40 border-2 border-dashed border-[#0052cc] bg-[#0052cc]/20 shadow-lg rounded-xs"
+                  style={{
+                    left: `${Math.min(areaSelectionBox.start.planX, areaSelectionBox.current.planX)}%`,
+                    top: `${Math.min(areaSelectionBox.start.planY, areaSelectionBox.current.planY)}%`,
+                    width: `${Math.abs(areaSelectionBox.current.planX - areaSelectionBox.start.planX)}%`,
+                    height: `${Math.abs(areaSelectionBox.current.planY - areaSelectionBox.start.planY)}%`,
+                  }}
+                >
+                  <div className="absolute -top-7 left-0 flex items-center gap-1.5 whitespace-nowrap rounded-md bg-[#004d99] px-2 py-0.5 text-[11px] font-bold text-white shadow-md">
+                    <span className="material-symbols-outlined text-[13px]">highlight_alt</span>
+                    <span>{areaSelectedPhotoIds.length} elemento{areaSelectedPhotoIds.length === 1 ? '' : 's'} en el área</span>
+                  </div>
+                </div>
+              )}
+
             <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
               <defs>
                 <linearGradient id="plan-mt" x1="0" y1="0" x2="1" y2="1">
@@ -1556,7 +1733,7 @@ export const MapView: React.FC<MapViewProps> = ({
                   y: y + (lineDeltaX / lineLength) * offset,
                 });
                 const isSelected = isMultipleSelectionMode
-                  ? selectedPlanPhotoIds.includes(photo.id)
+                  ? (selectedPlanPhotoIds.includes(photo.id) || areaSelectedPhotoIds.includes(photo.id))
                   : selectedPlanPhotoId === photo.id;
                 return (
                   <g key={`line-${photo.id}`}>
@@ -1741,7 +1918,7 @@ export const MapView: React.FC<MapViewProps> = ({
                       }}
                       style={{ left: `${midpointX}%`, top: `${midpointY}%`, backgroundColor: longitudinalMarkerColor, transform: `translate(-50%, -50%) scale(${iconScale})` }}
                       id={`plan-marker-${photo.id}`}
-                      className={`absolute z-10 flex h-8 w-8 items-center justify-center rounded-full border-2 border-white text-white shadow-lg transition hover:scale-110 active:cursor-grabbing ${placement || creationMode ? 'pointer-events-none' : isMultipleSelectionMode ? 'cursor-pointer' : 'cursor-grab'} ${(isMultipleSelectionMode ? selectedPlanPhotoIds.includes(photo.id) : selectedPlanPhotoId === photo.id) ? 'ring-4 ring-cyan-300 ring-offset-2' : focusedPlanPhotoId === photo.id ? 'ring-4 ring-amber-300 ring-offset-2 animate-pulse' : ''}`}
+                      className={`absolute z-10 flex h-8 w-8 items-center justify-center rounded-full border-2 border-white text-white shadow-lg transition hover:scale-110 active:cursor-grabbing ${placement || creationMode ? 'pointer-events-none' : isMultipleSelectionMode ? 'cursor-pointer' : 'cursor-grab'} ${(isMultipleSelectionMode ? (selectedPlanPhotoIds.includes(photo.id) || areaSelectedPhotoIds.includes(photo.id)) : selectedPlanPhotoId === photo.id) ? 'ring-4 ring-cyan-300 ring-offset-2' : focusedPlanPhotoId === photo.id ? 'ring-4 ring-amber-300 ring-offset-2 animate-pulse' : ''}`}
                       title={isMultipleSelectionMode ? `Seleccionar ${elementLabel(photo)}` : `Abrir o mover ${elementLabel(photo)}`}
                       aria-label={isMultipleSelectionMode ? `Seleccionar ${elementLabel(photo)}` : `Abrir o mover ${elementLabel(photo)}`}
                       aria-describedby={hoveredPlanPhotoId === photo.id ? `element-preview-${photo.id}` : undefined}
@@ -1811,7 +1988,7 @@ export const MapView: React.FC<MapViewProps> = ({
                     }}
                     style={{ left: `${photo.planX}%`, top: `${photo.planY}%`, backgroundColor: markerColor, transform: `translate(-50%, -50%) scale(${iconScale})` }}
                     id={`plan-marker-${photo.id}`}
-                    className={`absolute z-10 flex h-9 w-9 items-center justify-center rounded-full border-2 border-white text-white shadow-[0_3px_10px_rgba(6,36,58,0.35)] transition hover:scale-110 active:cursor-grabbing ${placement || creationMode ? 'pointer-events-none' : isMultipleSelectionMode ? 'cursor-pointer' : 'cursor-grab'} ${(isMultipleSelectionMode ? selectedPlanPhotoIds.includes(photo.id) : selectedPlanPhotoId === photo.id) ? 'ring-4 ring-cyan-300 ring-offset-2' : focusedPlanPhotoId === photo.id ? 'ring-4 ring-amber-300 ring-offset-2 animate-pulse' : ''}`}
+                    className={`absolute z-10 flex h-9 w-9 items-center justify-center rounded-full border-2 border-white text-white shadow-[0_3px_10px_rgba(6,36,58,0.35)] transition hover:scale-110 active:cursor-grabbing ${placement || creationMode ? 'pointer-events-none' : isMultipleSelectionMode ? 'cursor-pointer' : 'cursor-grab'} ${(isMultipleSelectionMode ? (selectedPlanPhotoIds.includes(photo.id) || areaSelectedPhotoIds.includes(photo.id)) : selectedPlanPhotoId === photo.id) ? 'ring-4 ring-cyan-300 ring-offset-2' : focusedPlanPhotoId === photo.id ? 'ring-4 ring-amber-300 ring-offset-2 animate-pulse' : ''}`}
                     title={isMultipleSelectionMode ? `Seleccionar ${elementLabel(photo)}` : `Abrir o mover ${elementLabel(photo)}`}
                     aria-label={isMultipleSelectionMode ? `Seleccionar ${elementLabel(photo)}` : `Abrir o mover ${elementLabel(photo)}`}
                     aria-describedby={hoveredPlanPhotoId === photo.id ? `element-preview-${photo.id}` : undefined}
@@ -1920,20 +2097,40 @@ export const MapView: React.FC<MapViewProps> = ({
             </button>
           </div>
 
+          {/* Botón de Selección por Área */}
+          <div className="mt-2.5">
+            <button
+              type="button"
+              onClick={toggleAreaSelectionMode}
+              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border py-2 px-3 text-xs font-bold transition shadow-xs ${
+                isAreaSelectionMode
+                  ? 'border-[#004d99] bg-[#004d99] text-white'
+                  : 'border-[#004d99] bg-[#f0f7fc] text-[#004d99] hover:bg-[#e1f0fa]'
+              }`}
+              title="Trazar un recuadro de arrastre sobre el plano para seleccionar elementos"
+            >
+              <span className="material-symbols-outlined text-[17px]">highlight_alt</span>
+              <span>{isAreaSelectionMode ? 'Recuadro de Selección ACTIVO' : 'Seleccionar por Recuadro de Área'}</span>
+            </button>
+          </div>
+
           <p className="mt-2 text-xs leading-4.5 text-[#547181]">
-            Toca los iconos o tramos en el plano para agregarlos/quitarlos.
+            {isAreaSelectionMode
+              ? 'Haz clic y arrastra un recuadro sobre el plano para seleccionar los elementos.'
+              : 'Arrastra un recuadro o haz clic en iconos y tramos para agregarlos o quitarlos.'}
           </p>
 
-          {/* Botón principal: Ajuste Grupal */}
+          {/* Botón principal: Edición Grupal */}
           <div className="mt-3 space-y-2">
             <button
               type="button"
               onClick={() => setIsBulkEditModalOpen(true)}
               disabled={!selectedMultiplePlanPhotos.length}
               className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[#004d99] px-3 text-xs font-bold text-white shadow-xs transition hover:bg-[#003870] disabled:cursor-not-allowed disabled:opacity-40"
+              title="Abrir modal de Edición Grupal para actualizar acta, avance o estado simultáneamente"
             >
               <span className="material-symbols-outlined text-[18px]">tune</span>
-              Ajustar en grupo ({selectedMultiplePlanPhotos.length})
+              Edición Grupal ({selectedMultiplePlanPhotos.length})
             </button>
 
             <div className="flex gap-2">
@@ -1959,6 +2156,21 @@ export const MapView: React.FC<MapViewProps> = ({
             </div>
           </div>
         </aside>
+      )}
+
+      {/* Floating banner for Area Selection Mode */}
+      {isAreaSelectionMode && (
+        <div className="pointer-events-none fixed top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 rounded-full border border-cyan-400/40 bg-[#003870]/95 px-4 py-2 text-xs font-semibold text-white shadow-xl backdrop-blur-md">
+          <span className="material-symbols-outlined text-[18px] text-cyan-300 animate-pulse">highlight_alt</span>
+          <span>Arrastra un recuadro sobre el plano para seleccionar múltiples elementos</span>
+          <button
+            type="button"
+            onClick={() => setIsAreaSelectionMode(false)}
+            className="pointer-events-auto ml-1 rounded-full bg-white/20 px-2.5 py-0.5 text-[11px] font-bold text-white hover:bg-white/30 transition"
+          >
+            Listo
+          </button>
+        </div>
       )}
 
       {selectedPlanPhoto && !placementInstruction && !isMultipleSelectionMode && (

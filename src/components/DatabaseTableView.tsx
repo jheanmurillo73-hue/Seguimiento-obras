@@ -1,5 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import { InspectionPhoto, InspectorProfile, CameraType, ExecutionStatus, getElementType, getPhotoProgressPercentage } from '../types';
+import {
+  InspectionPhoto,
+  InspectorProfile,
+  CameraType,
+  ExecutionStatus,
+  getElementType,
+  getPhotoProgressPercentage,
+  getPhotoNetworkInfo,
+  matchesNetworkFilter,
+} from '../types';
 import { getActaItemKey } from '../data/actaItems';
 
 interface DatabaseTableViewProps {
@@ -65,12 +74,62 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
     return Array.from(tramos).sort();
   }, [photos]);
 
+  const networkSummary = useMemo(() => {
+    let mtCount = 0;
+    let mtMeters = 0;
+    let btCount = 0;
+    let btMeters = 0;
+    let datosCount = 0;
+    let datosMeters = 0;
+    let totalMeters = 0;
+
+    photos.forEach((p) => {
+      const netInfo = getPhotoNetworkInfo(p);
+      const m = typeof p.metraje === 'number' ? p.metraje : parseFloat(String(p.metraje || '0')) || 0;
+      if (m > 0) totalMeters += m;
+
+      if (netInfo.all.includes('MT')) {
+        mtCount += 1;
+      }
+      if (netInfo.all.includes('BT')) {
+        btCount += 1;
+      }
+      if (netInfo.all.includes('DATOS')) {
+        datosCount += 1;
+      }
+
+      if (Array.isArray(p.pipeConduits) && p.pipeConduits.length > 0) {
+        p.pipeConduits.forEach((c) => {
+          const cM = typeof c.meters === 'number' ? c.meters : parseFloat(String(c.meters || '0')) || (m > 0 ? m : 0);
+          if (c.networkType === 'media_tension') {
+            mtMeters += cM;
+          } else if (c.networkType === 'baja_tension') {
+            btMeters += cM;
+          } else if (c.networkType === 'datos') {
+            datosMeters += cM;
+          }
+        });
+      } else {
+        if (netInfo.all.includes('MT') && m > 0) mtMeters += m;
+        if (netInfo.all.includes('BT') && m > 0) btMeters += m;
+        if (netInfo.all.includes('DATOS') && m > 0) datosMeters += m;
+      }
+    });
+
+    return {
+      mt: { count: mtCount, meters: Math.round(mtMeters * 10) / 10 },
+      bt: { count: btCount, meters: Math.round(btMeters * 10) / 10 },
+      datos: { count: datosCount, meters: Math.round(datosMeters * 10) / 10 },
+      totalMeters: Math.round(totalMeters * 10) / 10,
+    };
+  }, [photos]);
+
   // Filtered & Sorted Photos
   const filteredPhotos = useMemo(() => {
     return photos.filter((photo) => {
       // Type Filter (MT / BT / Datos)
       if (filterType !== 'all') {
-        if ((photo.cameraType || '').toUpperCase() !== filterType.toUpperCase()) {
+        if (!matchesNetworkFilter(photo, filterType)) {
           return false;
         }
       }
@@ -106,6 +165,7 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
       // Search Term across all fields
       if (searchTerm.trim()) {
         const query = searchTerm.toLowerCase();
+        const netInfo = getPhotoNetworkInfo(photo);
         const matchCode = (photo.cameraCode || '').toLowerCase().includes(query);
         const matchName = photo.name.toLowerCase().includes(query);
         const matchLoc = photo.location.toLowerCase().includes(query);
@@ -113,6 +173,7 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
         const matchNotes = (photo.fieldNotes || '').toLowerCase().includes(query);
         const matchInspector = photo.inspectorName.toLowerCase().includes(query);
         const matchType = (photo.cameraType || '').toLowerCase().includes(query);
+        const matchNet = netInfo.all.some((n) => n.toLowerCase().includes(query)) || netInfo.label.toLowerCase().includes(query);
         const matchMetraje = String(photo.metraje || '').toLowerCase().includes(query);
         const matchCategory = (photo.categoryLabel || '').toLowerCase().includes(query);
         const matchActaItem = getPhotoActaItems(photo)
@@ -127,6 +188,7 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
           !matchNotes &&
           !matchInspector &&
           !matchType &&
+          !matchNet &&
           !matchMetraje &&
           !matchCategory &&
           !matchActaItem
@@ -145,7 +207,10 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
       let aVal: any = a[sortField];
       let bVal: any = b[sortField];
 
-      if (sortField === 'metraje') {
+      if (sortField === 'cameraType') {
+        aVal = getPhotoNetworkInfo(a).primary;
+        bVal = getPhotoNetworkInfo(b).primary;
+      } else if (sortField === 'metraje') {
         aVal = typeof a.metraje === 'number' ? a.metraje : parseFloat(String(a.metraje || '0')) || 0;
         bVal = typeof b.metraje === 'number' ? b.metraje : parseFloat(String(b.metraje || '0')) || 0;
       } else if (sortField === 'date') {
@@ -222,14 +287,22 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
     const headers = [
       'ID',
       'Código Cámara',
-      'Tipo de Red',
+      'Red Principal',
+      'Redes Presentes',
       'Nombre Elemento',
       'Ítems de Acta - Códigos',
       'Ítems de Acta - Descripciones',
       'Ítems de Acta - Unidades',
       'Ítems de Acta - Cantidades Contractuales',
-      'Tramo',
-      'Metraje (m)',
+      'Tramo Resumen',
+      'Metraje Total (m)',
+      'Ductos Detallados (MT / BT / DATOS)',
+      'Ducto Media Tensión (MT)',
+      'Metros MT',
+      'Ducto Datos (DATOS)',
+      'Metros Datos',
+      'Ducto Baja Tensión (BT)',
+      'Metros BT',
       'Latitud',
       'Longitud',
       'Latitud Fin',
@@ -243,29 +316,51 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
       'Peligro / Acción Inmediata',
     ];
 
-    const rows = listToExport.map((p) => [
-      `"${p.displayId || p.id}"`,
-      `"${p.cameraCode || 'N/A'}"`,
-      `"${p.cameraType || 'MT'}"`,
-      `"${(p.name || '').replace(/"/g, '""')}"`,
-      `"${getPhotoActaItems(p).map((item) => item.code).join(' | ').replace(/"/g, '""')}"`,
-      `"${getPhotoActaItems(p).map((item) => item.description).join(' | ').replace(/"/g, '""')}"`,
-      `"${getPhotoActaItems(p).map((item) => item.unit || '—').join(' | ').replace(/"/g, '""')}"`,
-      `"${getPhotoActaItems(p).map((item) => item.quantity || '—').join(' | ').replace(/"/g, '""')}"`,
-      `"${(p.tramo || '').replace(/"/g, '""')}"`,
-      `"${p.metraje || '0'}"`,
-      `"${p.latitude || ''}"`,
-      `"${p.longitude || ''}"`,
-      `"${p.endLatitude || ''}"`,
-      `"${p.endLongitude || ''}"`,
-      `"${p.executionStatus || 'En proceso'}"`,
-      `"${p.status || 'Synced'}"`,
-      `"${(p.location || '').replace(/"/g, '""')}"`,
-      `"${(p.inspectorName || '').replace(/"/g, '""')}"`,
-      `"${p.date || ''}"`,
-      `"${(p.fieldNotes || '').replace(/"/g, '""')}"`,
-      `"${p.requiresImmediateAction ? 'SÍ' : 'NO'}"`,
-    ]);
+    const rows = listToExport.map((p) => {
+      const netInfo = getPhotoNetworkInfo(p);
+      const conduits = Array.isArray(p.pipeConduits) ? p.pipeConduits : [];
+
+      const conduitsSummary = conduits.map((c) => {
+        const netName = c.networkType === 'media_tension' ? 'MT' : c.networkType === 'baja_tension' ? 'BT' : 'DATOS';
+        return `[${netName}: ${c.configuration || '—'} (${c.meters ?? p.metraje ?? 0}m)]`;
+      }).join(' | ');
+
+      const mtConduit = conduits.find((c) => c.networkType === 'media_tension');
+      const datosConduit = conduits.find((c) => c.networkType === 'datos');
+      const btConduit = conduits.find((c) => c.networkType === 'baja_tension');
+
+      return [
+        `"${p.displayId || p.id}"`,
+        `"${p.cameraCode || 'N/A'}"`,
+        `"${netInfo.primary}"`,
+        `"${netInfo.all.join(', ')}"`,
+        `"${(p.name || '').replace(/"/g, '""')}"`,
+        `"${getPhotoActaItems(p).map((item) => item.code).join(' | ').replace(/"/g, '""')}"`,
+        `"${getPhotoActaItems(p).map((item) => item.description).join(' | ').replace(/"/g, '""')}"`,
+        `"${getPhotoActaItems(p).map((item) => item.unit || '—').join(' | ').replace(/"/g, '""')}"`,
+        `"${getPhotoActaItems(p).map((item) => item.quantity || '—').join(' | ').replace(/"/g, '""')}"`,
+        `"${(p.tramo || '').replace(/"/g, '""')}"`,
+        `"${p.metraje || '0'}"`,
+        `"${conduitsSummary.replace(/"/g, '""')}"`,
+        `"${mtConduit ? (mtConduit.configuration || '').replace(/"/g, '""') : (netInfo.primary === 'MT' ? (p.tramo || '') : '')}"`,
+        `"${mtConduit ? (mtConduit.meters ?? p.metraje ?? '0') : (netInfo.primary === 'MT' ? (p.metraje || '0') : '0')}"`,
+        `"${datosConduit ? (datosConduit.configuration || '').replace(/"/g, '""') : (netInfo.primary === 'DATOS' ? (p.tramo || '') : '')}"`,
+        `"${datosConduit ? (datosConduit.meters ?? p.metraje ?? '0') : (netInfo.primary === 'DATOS' ? (p.metraje || '0') : '0')}"`,
+        `"${btConduit ? (btConduit.configuration || '').replace(/"/g, '""') : (netInfo.primary === 'BT' ? (p.tramo || '') : '')}"`,
+        `"${btConduit ? (btConduit.meters ?? p.metraje ?? '0') : (netInfo.primary === 'BT' ? (p.metraje || '0') : '0')}"`,
+        `"${p.latitude || ''}"`,
+        `"${p.longitude || ''}"`,
+        `"${p.endLatitude || ''}"`,
+        `"${p.endLongitude || ''}"`,
+        `"${p.executionStatus || 'En proceso'}"`,
+        `"${p.status || 'Synced'}"`,
+        `"${(p.location || '').replace(/"/g, '""')}"`,
+        `"${(p.inspectorName || '').replace(/"/g, '""')}"`,
+        `"${p.date || ''}"`,
+        `"${(p.fieldNotes || '').replace(/"/g, '""')}"`,
+        `"${p.requiresImmediateAction ? 'SÍ' : 'NO'}"`,
+      ];
+    });
 
     const csvContent = '\uFEFF' + [headers.join(';'), ...rows.map((e) => e.join(';'))].join('\r\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -318,6 +413,51 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
               <p className="text-xs sm:text-sm text-[#424752] font-['Inter']">
                 Inventario técnico tabulado de cámaras, tramos de canalización, metrajes y elementos del plano
               </p>
+              {/* Quick Network Breakdown */}
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setFilterType(filterType === 'MT' ? 'all' : 'MT')}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all border ${
+                    filterType === 'MT'
+                      ? 'bg-[#1565c0] text-white border-[#1565c0] ring-2 ring-[#1565c0]/30'
+                      : 'bg-blue-50 text-[#1565c0] border-blue-200 hover:bg-blue-100'
+                  }`}
+                  title="Filtrar por Media Tensión"
+                >
+                  <span className="material-symbols-outlined text-[14px]">electrical_services</span>
+                  <span>MT: {networkSummary.mt.count} ({networkSummary.mt.meters} m)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterType(filterType === 'BT' ? 'all' : 'BT')}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all border ${
+                    filterType === 'BT'
+                      ? 'bg-amber-600 text-white border-amber-600 ring-2 ring-amber-600/30'
+                      : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                  }`}
+                  title="Filtrar por Baja Tensión"
+                >
+                  <span className="material-symbols-outlined text-[14px]">bolt</span>
+                  <span>BT: {networkSummary.bt.count} ({networkSummary.bt.meters} m)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterType(filterType === 'DATOS' ? 'all' : 'DATOS')}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all border ${
+                    filterType === 'DATOS'
+                      ? 'bg-teal-700 text-white border-teal-700 ring-2 ring-teal-700/30'
+                      : 'bg-teal-50 text-teal-800 border-teal-200 hover:bg-teal-100'
+                  }`}
+                  title="Filtrar por Datos / Control"
+                >
+                  <span className="material-symbols-outlined text-[14px]">settings_ethernet</span>
+                  <span>Datos: {networkSummary.datos.count} ({networkSummary.datos.meters} m)</span>
+                </button>
+                <span className="text-[11px] text-slate-500 font-semibold pl-1">
+                  Total canalizado: {networkSummary.totalMeters} m
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -700,8 +840,9 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
               ) : (
                 sortedPhotos.map((photo) => {
                   const isSelected = selectedIds.includes(photo.id);
-                  const isMT = (photo.cameraType || '').toUpperCase() === 'MT';
-                  const isBT = (photo.cameraType || '').toUpperCase() === 'BT';
+                  const netInfo = getPhotoNetworkInfo(photo);
+                  const isMT = netInfo.primary === 'MT';
+                  const isBT = netInfo.primary === 'BT';
                   const isTerminado = photo.executionStatus === 'Terminado';
 
                   return (
@@ -751,25 +892,35 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
                           }`}
                         >
                           <span className="material-symbols-outlined text-[14px]">
-                            {isMT ? 'electrical_services' : 'inbox'}
+                            {isMT ? 'electrical_services' : isBT ? 'bolt' : 'settings_ethernet'}
                           </span>
-                          <span>{photo.cameraCode || 'SB850'}</span>
+                          <span>{photo.cameraCode || (getElementType(photo) === 'tuberia' ? (photo.tramo ? `T-${photo.tramo}` : 'Tubería') : 'Elemento')}</span>
                         </span>
                       </td>
 
                       {/* Network Type Badge */}
                       <td className="py-3 px-3 whitespace-nowrap">
-                        <span
-                          className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold ${
-                            isMT
-                              ? 'bg-[#1565c0] text-white'
-                              : isBT
-                              ? 'bg-amber-600 text-white'
-                              : 'bg-teal-700 text-white'
-                          }`}
-                        >
-                          {photo.cameraType || 'MT'}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-1 max-w-[140px]">
+                          {netInfo.all.map((net) => {
+                            const isNetMT = net === 'MT';
+                            const isNetBT = net === 'BT';
+                            const isMatchesCurrentFilter = filterType === net;
+                            return (
+                              <span
+                                key={net}
+                                className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold transition-transform ${
+                                  isNetMT
+                                    ? 'bg-[#1565c0] text-white'
+                                    : isNetBT
+                                    ? 'bg-amber-600 text-white'
+                                    : 'bg-[#0D9FC6] text-white'
+                                } ${isMatchesCurrentFilter ? 'ring-2 ring-offset-1 ring-[#004d99] scale-105' : ''}`}
+                              >
+                                {net}
+                              </span>
+                            );
+                          })}
+                        </div>
                       </td>
 
                       {/* Element Name & Location */}
@@ -802,8 +953,49 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
                       </td>
 
                       {/* Tramo */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        {photo.tramo ? (
+                      <td className="py-2.5 px-3">
+                        {Array.isArray(photo.pipeConduits) && photo.pipeConduits.length > 0 ? (
+                          <div className="flex flex-col gap-1 min-w-[150px] max-w-[240px]">
+                            {photo.pipeConduits.map((conduit, idx) => {
+                              const cNet = conduit.networkType;
+                              const isMT = cNet === 'media_tension';
+                              const isBT = cNet === 'baja_tension';
+                              const netTag = isMT ? 'MT' : isBT ? 'BT' : 'DATOS';
+                              const badgeStyle = isMT
+                                ? 'bg-blue-50 text-[#004d99] border-blue-200'
+                                : isBT
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                : 'bg-cyan-50 text-cyan-800 border-cyan-200';
+                              const isHighlighted = filterType !== 'all' && (
+                                (filterType === 'MT' && isMT) ||
+                                (filterType === 'BT' && isBT) ||
+                                (filterType === 'DATOS' && !isMT && !isBT)
+                              );
+                              return (
+                                <div
+                                  key={conduit.id || idx}
+                                  className={`flex items-center justify-between gap-1.5 px-2 py-0.5 rounded border text-[11px] font-mono transition-colors ${
+                                    isHighlighted ? 'bg-white shadow-2xs border-[#004d99]' : 'bg-slate-50/80 border-slate-200'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`px-1 py-0.2 rounded text-[9px] font-bold border ${badgeStyle}`}>
+                                      {netTag}
+                                    </span>
+                                    <span className="font-semibold text-[#071e27]">
+                                      {conduit.configuration || '—'}
+                                    </span>
+                                  </div>
+                                  {conduit.meters ? (
+                                    <span className="text-[10px] text-slate-500">
+                                      {conduit.meters}m
+                                    </span>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : photo.tramo ? (
                           <span className="px-2.5 py-1 rounded-full bg-slate-100 text-[#071e27] border border-slate-200 text-xs font-medium">
                             {photo.tramo}
                           </span>
@@ -815,9 +1007,16 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
                       {/* Metraje */}
                       <td className="py-3 px-3 text-right whitespace-nowrap font-mono">
                         {photo.metraje !== undefined && photo.metraje !== null && String(photo.metraje) !== '' ? (
-                          <span className="font-bold text-xs text-[#071e27] bg-[#f3faff] px-2 py-0.5 rounded border border-[#c2c6d4]">
-                            {photo.metraje} m
-                          </span>
+                          <div className="flex flex-col items-end">
+                            <span className="font-bold text-xs text-[#071e27] bg-[#f3faff] px-2 py-0.5 rounded border border-[#c2c6d4]">
+                              {photo.metraje} m
+                            </span>
+                            {Array.isArray(photo.pipeConduits) && photo.pipeConduits.length > 1 && (
+                              <span className="text-[10px] text-slate-500 mt-0.5">
+                                {photo.pipeConduits.length} ductos
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-slate-400 text-xs">-</span>
                         )}

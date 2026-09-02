@@ -142,6 +142,148 @@ export const PIPE_NETWORK_OPTIONS: ReadonlyArray<{
 export const getPipeNetworkOption = (value?: string) =>
   PIPE_NETWORK_OPTIONS.find((option) => option.value === value) || PIPE_NETWORK_OPTIONS[1];
 
+export type NetworkCategory = 'MT' | 'BT' | 'DATOS';
+
+export interface PhotoNetworkInfo {
+  primary: NetworkCategory;
+  all: NetworkCategory[];
+  isMultiNetwork?: boolean;
+  multiLabel?: string;
+  label: string;
+  color: string;
+  badgeBg: string;
+  badgeText: string;
+  lightBadgeClass: string;
+  icon: string;
+}
+
+export const getPhotoNetworkInfo = (photo?: Partial<InspectionPhoto> | null): PhotoNetworkInfo => {
+  if (!photo) {
+    return {
+      primary: 'MT',
+      all: ['MT'],
+      isMultiNetwork: false,
+      multiLabel: 'MT',
+      label: 'Media Tensión (MT)',
+      color: '#1565c0',
+      badgeBg: 'bg-[#1565c0]',
+      badgeText: 'text-white',
+      lightBadgeClass: 'bg-blue-50 text-[#004d99] border-blue-200',
+      icon: 'bolt',
+    };
+  }
+
+  const networks = new Set<NetworkCategory>();
+  const isPipe = photo.elementType === 'tuberia' || (Array.isArray(photo.pipeConduits) && photo.pipeConduits.length > 0) || Boolean(photo.tramo);
+
+  // 1. Tubería / Tramos (conduits y pipeNetworkType)
+  if (Array.isArray(photo.pipeConduits) && photo.pipeConduits.length > 0) {
+    photo.pipeConduits.forEach((conduit) => {
+      if (conduit.networkType === 'media_tension') networks.add('MT');
+      else if (conduit.networkType === 'baja_tension') networks.add('BT');
+      else if (conduit.networkType === 'datos') networks.add('DATOS');
+    });
+  }
+
+  if (photo.pipeNetworkType === 'media_tension') networks.add('MT');
+  else if (photo.pipeNetworkType === 'baja_tension') networks.add('BT');
+  else if (photo.pipeNetworkType === 'datos') networks.add('DATOS');
+
+  // 2. Eléctrico / Cableado
+  if (photo.cableType === 'media_tension' || photo.planArea === 'electrical_mt') networks.add('MT');
+  else if (photo.cableType === 'baja_tension' || photo.planArea === 'electrical_bt') networks.add('BT');
+  else if (photo.cableType === 'alumbrado' || photo.planArea === 'electrical_lighting') networks.add('BT');
+
+  // 3. Cámara (solo si no es tubería pura o si aún no hay redes detectadas)
+  if (!isPipe || networks.size === 0) {
+    const rawCameraType = (photo.cameraType || '').trim().toUpperCase();
+    if (rawCameraType === 'MT') networks.add('MT');
+    else if (rawCameraType === 'BT') networks.add('BT');
+    else if (rawCameraType === 'DATOS' || rawCameraType === 'D') networks.add('DATOS');
+  }
+
+  // Fallback si no hay red identificada
+  if (networks.size === 0) {
+    const nameLower = (photo.name || '').toLowerCase();
+    const notesLower = (photo.fieldNotes || '').toLowerCase();
+    if (nameLower.includes('dato') || notesLower.includes('dato')) {
+      networks.add('DATOS');
+    } else if (nameLower.includes('baja') || notesLower.includes('baja')) {
+      networks.add('BT');
+    } else {
+      networks.add('MT');
+    }
+  }
+
+  const all = Array.from(networks);
+  const primary = all[0] || 'MT';
+  const isMultiNetwork = all.length > 1;
+  const multiLabel = all.join(' + ');
+
+  if (primary === 'DATOS') {
+    return {
+      primary: 'DATOS',
+      all,
+      isMultiNetwork,
+      multiLabel,
+      label: isMultiNetwork ? `Datos / Control (+${all.filter(n => n !== 'DATOS').join(', ')})` : 'Datos / Control',
+      color: '#0D9FC6',
+      badgeBg: 'bg-[#0D9FC6]',
+      badgeText: 'text-white',
+      lightBadgeClass: 'bg-teal-50 text-teal-800 border-teal-200',
+      icon: 'lan',
+    };
+  }
+
+  if (primary === 'BT') {
+    return {
+      primary: 'BT',
+      all,
+      isMultiNetwork,
+      multiLabel,
+      label: isMultiNetwork ? `Baja Tensión (+${all.filter(n => n !== 'BT').join(', ')})` : 'Baja Tensión (BT)',
+      color: '#EAB308',
+      badgeBg: 'bg-amber-600',
+      badgeText: 'text-white',
+      lightBadgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
+      icon: 'electric_bolt',
+    };
+  }
+
+  return {
+    primary: 'MT',
+    all,
+    isMultiNetwork,
+    multiLabel,
+    label: isMultiNetwork ? `Media Tensión (+${all.filter(n => n !== 'MT').join(', ')})` : 'Media Tensión (MT)',
+    color: '#1565c0',
+    badgeBg: 'bg-[#1565c0]',
+    badgeText: 'text-white',
+    lightBadgeClass: 'bg-blue-50 text-[#004d99] border-blue-200',
+    icon: 'bolt',
+  };
+};
+
+export const matchesNetworkFilter = (
+  photo: Partial<InspectionPhoto> | undefined,
+  filterValue: string,
+): boolean => {
+  if (!photo || !filterValue || filterValue === 'all') return true;
+  const target = filterValue.toUpperCase();
+  const info = getPhotoNetworkInfo(photo);
+
+  if (target === 'MT' || target === 'MEDIA_TENSION') {
+    return info.all.includes('MT');
+  }
+  if (target === 'BT' || target === 'BAJA_TENSION') {
+    return info.all.includes('BT');
+  }
+  if (target === 'DATOS' || target === 'DATA') {
+    return info.all.includes('DATOS');
+  }
+  return info.primary === target;
+};
+
 export type ActaLabelPosition = 'arriba' | 'abajo' | 'izquierda' | 'derecha';
 
 export interface ActaItem {
