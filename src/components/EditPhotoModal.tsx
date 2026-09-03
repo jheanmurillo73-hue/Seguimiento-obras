@@ -3,7 +3,7 @@
  * objeto seleccionado; una tubería nunca guarda datos de cámara, y viceversa.
  */
 import React, { useRef, useState } from 'react';
-import { CableGauge, CableType, CABLE_TYPE_OPTIONS, getCableGaugeOptionsForPlanArea, InspectionPhoto, ExecutionStatus, CameraCode, CameraType, ElementType, ActaLabelPosition, getElectricalElementOption, getElectricalPlanArea, getElementType, getPipeNetworkOption, PIPE_NETWORK_OPTIONS, PipeConduit, PipeNetworkType, getDefaultPipeConfiguration, normalizeEvidenceTimeline, normalizePipeConduits } from '../types';
+import { CableGauge, CableType, CABLE_TYPE_OPTIONS, getCableGaugeOptionsForPlanArea, InspectionPhoto, ExecutionStatus, CameraCode, CameraType, ElementType, ActaLabelPosition, getElectricalElementOption, getElectricalPlanArea, getElementType, getElementSector, getPipeNetworkOption, PIPE_NETWORK_OPTIONS, PipeConduit, PipeNetworkType, getDefaultPipeConfiguration, normalizeEvidenceTimeline, normalizePipeConduits } from '../types';
 import { WAREHOUSE_LOCATIONS, CAMERA_CODES, CAMERA_TYPES } from '../data/mockData';
 import { ACTA_ITEM_OPTIONS, getActaItemKey } from '../data/actaItems';
 import { compressEvidenceImageForUpload, formatImageBytes } from '../services/deviceStorageService';
@@ -220,9 +220,13 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
     const savedImageUrls = imageUrls;
     const savedPipeConduits = orderedPipeConduits;
     const primaryConduit = savedPipeConduits[0];
+    const finalName = isAdmin ? name.trim() || photo.name : photo.name;
+    const sectorInfo = getElementSector(finalName);
     onSave({
       ...photo,
-      name: isAdmin ? name.trim() || photo.name : photo.name,
+      name: finalName,
+      sector: sectorInfo.label,
+      sectorCode: sectorInfo.code,
       type: type.trim() || photo.type,
       location: location.trim() || photo.location,
       imageUrl: savedImageUrls[0] || photo.imageUrl,
@@ -338,6 +342,21 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
               className="w-full bg-[#f3faff] border border-[#c2c6d4] rounded-lg p-2.5 text-[14px] text-[#071e27] focus:border-[#004d99] focus:outline-none"
               required
             />
+            {(() => {
+              const liveSector = getElementSector(name || photo.name);
+              return (
+                <div className="mt-1.5 flex items-center gap-2 text-[12px]">
+                  <span className="text-[#555] font-medium">Sector asignado:</span>
+                  <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md font-bold border ${liveSector.badgeClass}`}>
+                    <span className="material-symbols-outlined text-[13px]">share_location</span>
+                    {liveSector.label} ({liveSector.code})
+                  </span>
+                  <span className="text-[11px] text-[#727783] italic">
+                    (Regla automática según nombre)
+                  </span>
+                </div>
+              );
+            })()}
           </div>
 
           <div className="rounded-xl border border-[#b7d5e4] bg-[#f8fbfd] p-3">

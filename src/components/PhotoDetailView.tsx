@@ -3,7 +3,7 @@
  * categorías distintas y comunica el alcance real del elemento seleccionado.
  */
 import React, { useEffect, useState } from 'react';
-import { groupEvidenceTimelineByDate, InspectionPhoto, normalizeEvidenceTimeline, getElementType } from '../types';
+import { groupEvidenceTimelineByDate, InspectionPhoto, normalizeEvidenceTimeline, getElementType, getElementSector } from '../types';
 
 const formatTimelineDay = (day: string) => {
   if (day === 'Sin fecha') return day;
@@ -388,6 +388,17 @@ export const PhotoDetailView: React.FC<PhotoDetailViewProps> = ({
                   {photo.metraje} m
                 </span>
               )}
+
+              {/* Sector Badge */}
+              {(() => {
+                const sec = getElementSector(photo.name);
+                return (
+                  <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded font-['Inter'] font-bold text-[12px] border ${sec.badgeClass}`}>
+                    <span className="material-symbols-outlined text-[14px]">share_location</span>
+                    {sec.label} ({sec.code})
+                  </span>
+                );
+              })()}
             </div>
           </div>
 
@@ -398,6 +409,29 @@ export const PhotoDetailView: React.FC<PhotoDetailViewProps> = ({
               <h3 className="font-['Inter'] font-medium text-[12px] text-[#727783] uppercase tracking-wider bg-[#cfe6f2] p-2 rounded-lg w-full">
                 Metadatos y Propiedades
               </h3>
+
+              {/* Property: Sector */}
+              <div className="grid grid-cols-3 gap-2 items-center border-b border-[#c2c6d4] pb-3">
+                <span className="col-span-1 font-['Inter'] font-bold text-[14px] text-[#424752]">
+                  Sector
+                </span>
+                <div className="col-span-2">
+                  {(() => {
+                    const sec = getElementSector(photo.name);
+                    return (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[13px] font-bold border ${sec.badgeClass}`}>
+                          <span className="material-symbols-outlined text-[15px]">share_location</span>
+                          {sec.label}
+                        </span>
+                        <span className="text-[11px] font-mono font-bold text-[#555] bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                          Código: {sec.code}
+                        </span>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
 
               {/* Property: Estado (En proceso / Terminado) */}
               <div className="grid grid-cols-3 gap-2 items-center border-b border-[#c2c6d4] pb-3">

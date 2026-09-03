@@ -8,6 +8,7 @@ import {
   getPhotoProgressPercentage,
   getPhotoNetworkInfo,
   matchesNetworkFilter,
+  getElementSector,
 } from '../types';
 import { getActaItemKey } from '../data/actaItems';
 
@@ -22,7 +23,7 @@ interface DatabaseTableViewProps {
   onUpdatePhoto: (updated: InspectionPhoto) => void;
 }
 
-type SortField = 'cameraCode' | 'cameraType' | 'name' | 'tramo' | 'metraje' | 'executionStatus' | 'date' | 'inspectorName';
+type SortField = 'cameraCode' | 'cameraType' | 'sector' | 'name' | 'tramo' | 'metraje' | 'executionStatus' | 'date' | 'inspectorName';
 type SortOrder = 'asc' | 'desc';
 
 const getPhotoActaItems = (photo: InspectionPhoto) => photo.actaItems?.length
@@ -42,6 +43,7 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
   // Search and Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
+  const [filterSector, setFilterSector] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterCameraCode, setFilterCameraCode] = useState<string>('all');
   const [filterTramo, setFilterTramo] = useState<string>('all');
@@ -124,12 +126,43 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
     };
   }, [photos]);
 
+  const sectorSummary = useMemo(() => {
+    let i1Count = 0;
+    let i2Count = 0;
+    let troncalCount = 0;
+    let otroCount = 0;
+
+    photos.forEach((p) => {
+      const s = getElementSector(p.name);
+      if (s.code === 'I1') i1Count++;
+      else if (s.code === 'I2') i2Count++;
+      else if (s.code === 'TRONCAL') troncalCount++;
+      else otroCount++;
+    });
+
+    return {
+      i1: i1Count,
+      i2: i2Count,
+      troncal: troncalCount,
+      otro: otroCount,
+      total: photos.length,
+    };
+  }, [photos]);
+
   // Filtered & Sorted Photos
   const filteredPhotos = useMemo(() => {
     return photos.filter((photo) => {
       // Type Filter (MT / BT / Datos)
       if (filterType !== 'all') {
         if (!matchesNetworkFilter(photo, filterType)) {
+          return false;
+        }
+      }
+
+      // Sector Filter
+      if (filterSector !== 'all') {
+        const s = getElementSector(photo.name);
+        if (s.code !== filterSector) {
           return false;
         }
       }
@@ -199,7 +232,7 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
 
       return true;
     });
-  }, [photos, filterType, filterStatus, filterCameraCode, filterTramo, filterSync, searchTerm]);
+  }, [photos, filterType, filterSector, filterStatus, filterCameraCode, filterTramo, filterSync, searchTerm]);
 
   // Sorted list
   const sortedPhotos = useMemo(() => {
@@ -207,7 +240,10 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
       let aVal: any = a[sortField];
       let bVal: any = b[sortField];
 
-      if (sortField === 'cameraType') {
+      if (sortField === 'sector') {
+        aVal = getElementSector(a.name).label;
+        bVal = getElementSector(b.name).label;
+      } else if (sortField === 'cameraType') {
         aVal = getPhotoNetworkInfo(a).primary;
         bVal = getPhotoNetworkInfo(b).primary;
       } else if (sortField === 'metraje') {
@@ -290,6 +326,8 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
       'Red Principal',
       'Redes Presentes',
       'Nombre Elemento',
+      'Sector',
+      'Código Sector',
       'Ítems de Acta - Códigos',
       'Ítems de Acta - Descripciones',
       'Ítems de Acta - Unidades',
@@ -328,6 +366,7 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
       const mtConduit = conduits.find((c) => c.networkType === 'media_tension');
       const datosConduit = conduits.find((c) => c.networkType === 'datos');
       const btConduit = conduits.find((c) => c.networkType === 'baja_tension');
+      const sectorInfo = getElementSector(p.name);
 
       return [
         `"${p.displayId || p.id}"`,
@@ -335,6 +374,8 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
         `"${netInfo.primary}"`,
         `"${netInfo.all.join(', ')}"`,
         `"${(p.name || '').replace(/"/g, '""')}"`,
+        `"${sectorInfo.label}"`,
+        `"${sectorInfo.code}"`,
         `"${getPhotoActaItems(p).map((item) => item.code).join(' | ').replace(/"/g, '""')}"`,
         `"${getPhotoActaItems(p).map((item) => item.description).join(' | ').replace(/"/g, '""')}"`,
         `"${getPhotoActaItems(p).map((item) => item.unit || '—').join(' | ').replace(/"/g, '""')}"`,
@@ -458,6 +499,71 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
                   Total canalizado: {networkSummary.totalMeters} m
                 </span>
               </div>
+
+              {/* Quick Sector Breakdown */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
+                <span className="text-[11px] text-[#424752] font-bold flex items-center gap-1 mr-1">
+                  <span className="material-symbols-outlined text-[13px] text-[#004d99]">share_location</span>
+                  Sectores:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setFilterSector(filterSector === 'I1' ? 'all' : 'I1')}
+                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold transition-all border ${
+                    filterSector === 'I1'
+                      ? 'bg-blue-600 text-white border-blue-600 ring-2 ring-blue-600/30'
+                      : 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100'
+                  }`}
+                  title="Filtrar por Intersección 1 (elementos con 'I1' en su nombre)"
+                >
+                  <span>Intersección 1: {sectorSummary.i1}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterSector(filterSector === 'I2' ? 'all' : 'I2')}
+                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold transition-all border ${
+                    filterSector === 'I2'
+                      ? 'bg-purple-600 text-white border-purple-600 ring-2 ring-purple-600/30'
+                      : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'
+                  }`}
+                  title="Filtrar por Intersección 2 (elementos con 'I2' en su nombre)"
+                >
+                  <span>Intersección 2: {sectorSummary.i2}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterSector(filterSector === 'TRONCAL' ? 'all' : 'TRONCAL')}
+                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold transition-all border ${
+                    filterSector === 'TRONCAL'
+                      ? 'bg-amber-600 text-white border-amber-600 ring-2 ring-amber-600/30'
+                      : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                  }`}
+                  title="Filtrar por Troncal Principal (elementos con 'TRONCAL' en su nombre)"
+                >
+                  <span>Troncal: {sectorSummary.troncal}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterSector(filterSector === 'OTRO' ? 'all' : 'OTRO')}
+                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold transition-all border ${
+                    filterSector === 'OTRO'
+                      ? 'bg-slate-700 text-white border-slate-700 ring-2 ring-slate-700/30'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                  title="Filtrar por Otros Sectores"
+                >
+                  <span>Otros: {sectorSummary.otro}</span>
+                </button>
+                {filterSector !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setFilterSector('all')}
+                    className="text-[11px] text-blue-600 underline font-medium hover:text-blue-800 ml-1"
+                  >
+                    Ver todos
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -557,6 +663,19 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
               <option value="DATOS">Datos / Control</option>
             </select>
 
+            {/* Filter: Sector */}
+            <select
+              value={filterSector}
+              onChange={(e) => setFilterSector(e.target.value)}
+              className="px-3 py-2.5 text-xs font-['Inter'] font-semibold bg-[#f3faff] border border-[#c2c6d4] rounded-xl outline-none focus:border-[#004d99] text-[#071e27]"
+            >
+              <option value="all">Sector: Todos</option>
+              <option value="I1">Intersección 1 (I1)</option>
+              <option value="I2">Intersección 2 (I2)</option>
+              <option value="TRONCAL">Troncal Principal (TRONCAL)</option>
+              <option value="OTRO">Otros Sectores (OTRO)</option>
+            </select>
+
             {/* Filter: Estado de Ejecución */}
             <select
               value={filterStatus}
@@ -601,12 +720,13 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
             )}
 
             {/* Reset Filters */}
-            {(searchTerm || filterType !== 'all' || filterStatus !== 'all' || filterCameraCode !== 'all' || filterTramo !== 'all' || filterSync !== 'all') && (
+            {(searchTerm || filterType !== 'all' || filterSector !== 'all' || filterStatus !== 'all' || filterCameraCode !== 'all' || filterTramo !== 'all' || filterSync !== 'all') && (
               <button
                 type="button"
                 onClick={() => {
                   setSearchTerm('');
                   setFilterType('all');
+                  setFilterSector('all');
                   setFilterStatus('all');
                   setFilterCameraCode('all');
                   setFilterTramo('all');
@@ -721,6 +841,21 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
                   </div>
                 </th>
 
+                {/* Sector */}
+                <th
+                  onClick={() => handleSort('sector')}
+                  className="py-3.5 px-3 cursor-pointer hover:text-[#004d99] transition-colors whitespace-nowrap"
+                >
+                  <div className="flex items-center gap-1">
+                    <span>Sector</span>
+                    {sortField === 'sector' && (
+                      <span className="material-symbols-outlined text-[16px]">
+                        {sortOrder === 'asc' ? 'arrow_upward' : 'arrow_downward'}
+                      </span>
+                    )}
+                  </div>
+                </th>
+
                 {/* Element / Name */}
                 <th
                   onClick={() => handleSort('name')}
@@ -825,7 +960,7 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
             <tbody className="divide-y divide-[#c2c6d4]/60">
               {sortedPhotos.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="py-12 text-center text-[#727783]">
+                  <td colSpan={14} className="py-12 text-center text-[#727783]">
                     <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-3 text-slate-400">
                       <span className="material-symbols-outlined text-[28px]">search_off</span>
                     </div>
@@ -921,6 +1056,19 @@ export const DatabaseTableView: React.FC<DatabaseTableViewProps> = ({
                             );
                           })}
                         </div>
+                      </td>
+
+                      {/* Sector Badge */}
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        {(() => {
+                          const s = getElementSector(photo.name);
+                          return (
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold border ${s.badgeClass}`}>
+                              <span className="material-symbols-outlined text-[12px]">share_location</span>
+                              <span>{s.label}</span>
+                            </span>
+                          );
+                        })()}
                       </td>
 
                       {/* Element Name & Location */}

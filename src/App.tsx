@@ -21,6 +21,7 @@ import {
   PlanArea,
   getPhotoProgressPercentage,
   ActivityActionCategory,
+  getElementSector,
 } from './types';
 import {
   INITIAL_PHOTOS,
@@ -90,9 +91,12 @@ const normalizeInspectionPhoto = (photo: InspectionPhoto): InspectionPhoto => {
     })
     : [];
   const primaryConduit = pipeConduits[0];
+  const sectorInfo = getElementSector(photo.name);
 
   return {
     ...photo,
+    sector: sectorInfo.label,
+    sectorCode: sectorInfo.code,
     elementType,
     imageUrl,
     imageUrls: evidenceUrls,

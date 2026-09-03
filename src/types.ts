@@ -367,6 +367,8 @@ export interface InspectionPhoto {
   requiresImmediateAction: boolean;
   fileSize?: string;
   resolution?: string;
+  sector?: string;
+  sectorCode?: SectorCode;
 }
 
 export const normalizeEvidenceTimeline = (
@@ -526,3 +528,52 @@ export interface InspectionCollection {
   lastUpdated: string;
   photoIds: string[];
 }
+
+export type SectorCode = 'I1' | 'I2' | 'TRONCAL' | 'OTRO';
+
+export interface ElementSectorInfo {
+  code: SectorCode;
+  label: string;
+  badgeClass: string;
+  bgClass: string;
+}
+
+/**
+ * Determina el sector de cualquier elemento (cámara o tramo de tubería):
+ * - Contiene 'I1' -> Intersección 1
+ * - Contiene 'I2' -> Intersección 2
+ * - Contiene 'TRONCAL' -> Área Troncal / Troncal Principal
+ */
+export const getElementSector = (name?: string): ElementSectorInfo => {
+  const upper = (name || '').toUpperCase();
+  if (upper.includes('I1')) {
+    return {
+      code: 'I1',
+      label: 'Intersección 1',
+      badgeClass: 'bg-blue-100 text-blue-900 border-blue-200',
+      bgClass: 'bg-blue-600',
+    };
+  }
+  if (upper.includes('I2')) {
+    return {
+      code: 'I2',
+      label: 'Intersección 2',
+      badgeClass: 'bg-indigo-100 text-indigo-900 border-indigo-200',
+      bgClass: 'bg-indigo-600',
+    };
+  }
+  if (upper.includes('TRONCAL')) {
+    return {
+      code: 'TRONCAL',
+      label: 'Troncal Principal',
+      badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-200',
+      bgClass: 'bg-emerald-600',
+    };
+  }
+  return {
+    code: 'OTRO',
+    label: 'Otros Sectores',
+    badgeClass: 'bg-slate-100 text-slate-800 border-slate-200',
+    bgClass: 'bg-slate-500',
+  };
+};

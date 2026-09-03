@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabaseService, SupabaseConnectionStatus } from '../services/supabaseService';
 import { getActiveSupabaseConfig, saveCustomSupabaseConfig, resetSupabaseConfig } from '../lib/supabase';
-import { InspectionPhoto, InspectorProfile, getPhotoNetworkInfo } from '../types';
+import { InspectionPhoto, InspectorProfile, getPhotoNetworkInfo, getElementSector, SectorCode } from '../types';
 
 interface SupabaseTablesModalProps {
   isOpen: boolean;
@@ -23,10 +23,12 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
   const [activeTab, setActiveTab] = useState<'tables' | 'resumen' | 'diagnostico' | 'sql' | 'connection' | 'sync'>('resumen');
   const [selectedTable, setSelectedTable] = useState<string>('v_resumen_camaras_interseccion');
   const [copiedSql, setCopiedSql] = useState(false);
+  const [copiedSectorSql, setCopiedSectorSql] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<SupabaseConnectionStatus | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isUpdatingSectors, setIsUpdatingSectors] = useState(false);
   const [sectorFilter, setSectorFilter] = useState<'TODOS' | 'I1' | 'I2' | 'TRONCAL'>('TODOS');
   const [networkFilter, setNetworkFilter] = useState<'TODOS' | 'MT' | 'BT' | 'DATOS'>('TODOS');
   const [statusFilter, setStatusFilter] = useState<string>('TODOS');
@@ -44,8 +46,6 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
       setInputKey(currentConfig.anonKey);
     }
   }, [isOpen]);
-
-  if (!isOpen) return null;
 
   // Cálculos analíticos de cámaras por intersección, red, fecha, acta y estado
   const cameraSummaryData = useMemo(() => {
@@ -162,19 +162,9 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
     const detailMap: Record<string, DetailRow> = {};
 
     cameras.forEach(c => {
-      let sKey: 'I1' | 'I2' | 'TRONCAL' | 'OTRO' = 'OTRO';
-      let sName = 'Otros Sectores';
-
-      if (c.name && /(_I1\b|\bI1\b)/i.test(c.name)) {
-        sKey = 'I1';
-        sName = 'Intersección 1';
-      } else if (c.name && /(_I2\b|\bI2\b)/i.test(c.name)) {
-        sKey = 'I2';
-        sName = 'Intersección 2';
-      } else if (c.name && /TRONCAL/i.test(c.name)) {
-        sKey = 'TRONCAL';
-        sName = 'Troncal Principal';
-      }
+      const sectorInfo = getElementSector(c.name);
+      const sKey: 'I1' | 'I2' | 'TRONCAL' | 'OTRO' = sectorInfo.code;
+      const sName = sectorInfo.label;
 
       const m = matrixMap[sKey];
       m.total++;
@@ -253,6 +243,56 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
         enProceso: matrixList.reduce((acc, r) => acc + r.enProceso, 0),
         terminadas: matrixList.reduce((acc, r) => acc + r.terminadas, 0),
       },
+    };
+  }, [photos]);
+
+  const tramosSummaryData = useMemo(() => {
+    const pipes = photos.filter(p => p.elementType === 'tuberia' || Boolean(p.tramo));
+    const matrixMap: Record<
+      SectorCode,
+      {
+        sectorKey: SectorCode;
+        sectorName: string;
+        totalTramos: number;
+        totalDuctos: number;
+        totalMetros: number;
+        mtMetros: number;
+        btMetros: number;
+        datosMetros: number;
+      }
+    > = {
+      I1: { sectorKey: 'I1', sectorName: 'Intersección 1', totalTramos: 0, totalDuctos: 0, totalMetros: 0, mtMetros: 0, btMetros: 0, datosMetros: 0 },
+      I2: { sectorKey: 'I2', sectorName: 'Intersección 2', totalTramos: 0, totalDuctos: 0, totalMetros: 0, mtMetros: 0, btMetros: 0, datosMetros: 0 },
+      TRONCAL: { sectorKey: 'TRONCAL', sectorName: 'Troncal Principal', totalTramos: 0, totalDuctos: 0, totalMetros: 0, mtMetros: 0, btMetros: 0, datosMetros: 0 },
+      OTRO: { sectorKey: 'OTRO', sectorName: 'Otros Sectores', totalTramos: 0, totalDuctos: 0, totalMetros: 0, mtMetros: 0, btMetros: 0, datosMetros: 0 },
+    };
+
+    pipes.forEach(p => {
+      const sectorInfo = getElementSector(p.name);
+      const sKey = sectorInfo.code;
+      const m = matrixMap[sKey];
+      m.totalTramos++;
+
+      const conduits = (p.pipeConduits && p.pipeConduits.length > 0)
+        ? p.pipeConduits
+        : [{ networkType: p.pipeNetworkType || 'media_tension', meters: p.metraje || '0' }];
+
+      conduits.forEach(c => {
+        m.totalDuctos++;
+        const meters = parseFloat(String(c.meters || '0')) || 0;
+        m.totalMetros += meters;
+        if (c.networkType === 'media_tension') m.mtMetros += meters;
+        else if (c.networkType === 'baja_tension') m.btMetros += meters;
+        else if (c.networkType === 'datos') m.datosMetros += meters;
+      });
+    });
+
+    const matrixList = Object.values(matrixMap).filter(m => m.totalTramos > 0);
+    return {
+      totalPipes: pipes.length,
+      matrix: matrixList,
+      totalMetros: Math.round(matrixList.reduce((acc, r) => acc + r.totalMetros, 0) * 100) / 100,
+      totalDuctos: matrixList.reduce((acc, r) => acc + r.totalDuctos, 0),
     };
   }, [photos]);
 
@@ -359,6 +399,28 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
     }
   };
 
+  const handleUpdateSectors = async () => {
+    setIsUpdatingSectors(true);
+    try {
+      const result = await supabaseService.updateAllSectorsInSupabase();
+      if (result.success) {
+        onShowToast(result.message, 'success');
+        if (onPhotosImported) {
+          const fresh = await supabaseService.fetchPhotos();
+          if (fresh && fresh.length > 0) {
+            onPhotosImported(fresh);
+          }
+        }
+      } else {
+        onShowToast(result.message, 'error');
+      }
+    } catch (err: any) {
+      onShowToast(`Error al actualizar sectores: ${err.message || 'Desconocido'}`, 'error');
+    } finally {
+      setIsUpdatingSectors(false);
+    }
+  };
+
   const tablesData: Record<
     string,
     {
@@ -391,6 +453,8 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
         { name: 'metraje', type: 'TEXT', constraints: 'NULL', description: 'Metraje o longitud del tramo en metros (ej: 12, 25.5)' },
         { name: 'pipe_network_type', type: 'TEXT', constraints: "CHECK ('media_tension', 'baja_tension', 'datos')", description: 'Tipo principal de red de canalización' },
         { name: 'pipe_conduits', type: 'JSONB', constraints: "DEFAULT '[]'::jsonb", description: 'Ductos detallados por red: id, networkType (media_tension / baja_tension / datos), configuration (ej. 2x4", 3x4") y metros' },
+        { name: 'sector', type: 'TEXT', constraints: 'NULL', description: 'Sector clasificado (Intersección 1, Intersección 2, Troncal Principal, Otros Sectores)' },
+        { name: 'sector_code', type: 'TEXT', constraints: 'NULL', description: 'Código del sector (I1, I2, TRONCAL, OTRO)' },
         { name: 'has_media_tension', type: 'BOOLEAN', constraints: 'DEFAULT false', description: 'Indica si el tramo contiene ducto(s) de Media Tensión' },
         { name: 'has_datos', type: 'BOOLEAN', constraints: 'DEFAULT false', description: 'Indica si el tramo contiene ducto(s) de Datos / Control' },
         { name: 'has_baja_tension', type: 'BOOLEAN', constraints: 'DEFAULT false', description: 'Indica si el tramo contiene ducto(s) de Baja Tensión' },
@@ -438,6 +502,8 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
         { name: 'photo_id', type: 'TEXT', constraints: 'NOT NULL', description: 'ID de la inspección vinculada' },
         { name: 'user_name', type: 'TEXT', constraints: 'NOT NULL', description: 'Inspector que ejecutó la acción' },
         { name: 'type', type: 'TEXT', constraints: "CHECK ('upload', 'sync', 'edit', 'flag', 'verified')", description: 'Tipo de evento de auditoría' },
+        { name: 'sector', type: 'TEXT', constraints: 'NULL', description: 'Sector clasificado del elemento' },
+        { name: 'sector_code', type: 'TEXT', constraints: 'NULL', description: 'Código de sector (I1, I2, TRONCAL, OTRO)' },
         { name: 'created_at', type: 'TIMESTAMPTZ', constraints: 'DEFAULT now()', description: 'Timestamp exacto' },
       ],
     },
@@ -579,7 +645,24 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
         { name: 'elementos_pendientes', type: 'BIGINT', constraints: 'NOT NULL', description: 'Elementos pendientes' },
       ],
     },
+    v_resumen_tramos_interseccion: {
+      name: 'v_resumen_tramos_interseccion (Vista SQL Tramos por Sector)',
+      description: 'Resumen analítico de canalizaciones y tramos de tubería agrupados por Intersección 1 (I1), Intersección 2 (I2) y Área Troncal (TRONCAL), desglosando metros lineales de MT, BT y Datos.',
+      icon: 'linear_scale',
+      columns: [
+        { name: 'sector', type: 'TEXT', constraints: 'GROUP KEY', description: 'Nombre del Sector / Intersección' },
+        { name: 'sector_codigo', type: 'TEXT', constraints: "'I1' | 'I2' | 'TRONCAL' | 'OTRO'", description: 'Código corto de sector' },
+        { name: 'total_tramos_fisicos', type: 'BIGINT', constraints: 'NOT NULL', description: 'Número de tramos o zanjas físicas' },
+        { name: 'total_ductos', type: 'BIGINT', constraints: 'NOT NULL', description: 'Cantidad total de ductos individuales' },
+        { name: 'total_metros_lineales', type: 'NUMERIC', constraints: 'METROS', description: 'Metros lineales acumulados' },
+        { name: 'metros_mt', type: 'NUMERIC', constraints: 'METROS', description: 'Metros de ductos para Media Tensión' },
+        { name: 'metros_bt', type: 'NUMERIC', constraints: 'METROS', description: 'Metros de ductos para Baja Tensión' },
+        { name: 'metros_datos', type: 'NUMERIC', constraints: 'METROS', description: 'Metros de ductos para Datos / Control' },
+      ],
+    },
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
@@ -760,6 +843,38 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
                       <span className="material-symbols-outlined text-[16px]">schema</span>
                       Diagnóstico Tablas
                     </button>
+                  </div>
+                </div>
+
+                {/* Sector Rule Callout Banner */}
+                <div className="bg-[#eff6ff] border border-[#bfdbfe] rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-2xs">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-[#dbeafe] text-[#1d4ed8] flex items-center justify-center shrink-0">
+                      <span className="material-symbols-outlined text-[20px]">lightbulb</span>
+                    </div>
+                    <div>
+                      <div className="font-bold text-[13px] text-[#1e3a8a] flex items-center gap-2">
+                        <span>Regla de Clasificación de Sectores por Nombre</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-blue-200 text-blue-900 font-mono font-semibold">
+                          Cámaras y Tuberías
+                        </span>
+                      </div>
+                      <div className="text-[12px] text-[#1e40af] mt-0.5">
+                        Detecta automáticamente el sector analizando el nombre de la cámara o tramo:
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-100 border border-blue-300 text-blue-900 text-[12px] font-semibold">
+                      <span className="font-mono font-bold">I1</span> ➔ Intersección 1
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-100 border border-indigo-300 text-indigo-900 text-[12px] font-semibold">
+                      <span className="font-mono font-bold">I2</span> ➔ Intersección 2
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-100 border border-emerald-300 text-emerald-900 text-[12px] font-semibold">
+                      <span className="font-mono font-bold">TRONCAL</span> ➔ Área Troncal
+                    </span>
                   </div>
                 </div>
 
@@ -1043,6 +1158,100 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
                     </table>
                   </div>
                 </div>
+
+                {/* Resumen de Tramos y Canalizaciones por Intersección */}
+                {tramosSummaryData.matrix.length > 0 && (
+                  <div className="bg-white p-4 rounded-xl border border-[#c2c6d4] shadow-2xs space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-[18px] text-[#004d99]">linear_scale</span>
+                        <h4 className="font-['Hanken_Grotesk'] font-bold text-[14px] text-[#071e27]">
+                          Tramos de Tubería y Canalizaciones por Sector (Vista SQL: <code className="font-mono text-[12px] text-[#004d99]">v_resumen_tramos_interseccion</code>)
+                        </h4>
+                      </div>
+                      <span className="text-[11px] text-[#727782] font-mono">
+                        {tramosSummaryData.totalPipes} Tramos ({tramosSummaryData.totalMetros} m lineales totales)
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-[12px] border-collapse">
+                        <thead className="bg-[#f0f4f9] text-[#424752] font-bold border-b border-[#dce2ec]">
+                          <tr>
+                            <th className="py-2.5 px-3">Sector / Intersección</th>
+                            <th className="py-2.5 px-3 text-center">Tramos Físicos</th>
+                            <th className="py-2.5 px-3 text-center">Ductos Totales</th>
+                            <th className="py-2.5 px-3 text-center font-bold text-[#004d99]">Metros Totales</th>
+                            <th className="py-2.5 px-3 text-center bg-blue-100/50 text-blue-900">Metros MT</th>
+                            <th className="py-2.5 px-3 text-center bg-amber-100/50 text-amber-900">Metros BT</th>
+                            <th className="py-2.5 px-3 text-center bg-cyan-100/50 text-cyan-900">Metros Datos</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#edf0f5]">
+                          {tramosSummaryData.matrix.map((row) => (
+                            <tr key={row.sectorKey} className="hover:bg-[#fbfdff]">
+                              <td className="py-2.5 px-3 font-bold text-[#071e27] flex items-center gap-2">
+                                <span
+                                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                                    row.sectorKey === 'I1'
+                                      ? 'bg-blue-600'
+                                      : row.sectorKey === 'I2'
+                                      ? 'bg-indigo-600'
+                                      : row.sectorKey === 'TRONCAL'
+                                      ? 'bg-emerald-600'
+                                      : 'bg-slate-400'
+                                  }`}
+                                ></span>
+                                {row.sectorName}
+                              </td>
+                              <td className="py-2.5 px-3 text-center font-bold text-[#071e27] bg-[#f8fafc]">
+                                {row.totalTramos}
+                              </td>
+                              <td className="py-2.5 px-3 text-center font-medium text-[#424752]">
+                                {row.totalDuctos}
+                              </td>
+                              <td className="py-2.5 px-3 text-center font-bold text-[#004d99]">
+                                {row.totalMetros} m
+                              </td>
+                              <td className="py-2.5 px-3 text-center font-bold text-blue-900 bg-blue-50/40">
+                                {Math.round(row.mtMetros * 100) / 100} m
+                              </td>
+                              <td className="py-2.5 px-3 text-center font-bold text-amber-900 bg-amber-50/40">
+                                {Math.round(row.btMetros * 100) / 100} m
+                              </td>
+                              <td className="py-2.5 px-3 text-center font-bold text-cyan-900 bg-cyan-50/40">
+                                {Math.round(row.datosMetros * 100) / 100} m
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot className="bg-[#f0f4f9] font-bold text-[#071e27] border-t-2 border-[#c2c6d4]">
+                          <tr>
+                            <td className="py-2.5 px-3">Total Consolidado</td>
+                            <td className="py-2.5 px-3 text-center font-extrabold text-[#004d99]">
+                              {tramosSummaryData.totalPipes}
+                            </td>
+                            <td className="py-2.5 px-3 text-center text-[#424752]">
+                              {tramosSummaryData.totalDuctos}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-extrabold text-[#004d99]">
+                              {tramosSummaryData.totalMetros} m
+                            </td>
+                            <td className="py-2.5 px-3 text-center text-blue-900 font-extrabold bg-blue-100/60">
+                              {Math.round(tramosSummaryData.matrix.reduce((acc, r) => acc + r.mtMetros, 0) * 100) / 100} m
+                            </td>
+                            <td className="py-2.5 px-3 text-center text-amber-900 font-extrabold bg-amber-100/60">
+                              {Math.round(tramosSummaryData.matrix.reduce((acc, r) => acc + r.btMetros, 0) * 100) / 100} m
+                            </td>
+                            <td className="py-2.5 px-3 text-center text-cyan-900 font-extrabold bg-cyan-100/60">
+                              {Math.round(tramosSummaryData.matrix.reduce((acc, r) => acc + r.datosMetros, 0) * 100) / 100} m
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* 2. Desglose Multidimensional (Vista v_resumen_camaras_interseccion) */}
                 <div className="bg-white rounded-xl border border-[#c2c6d4] shadow-2xs overflow-hidden">
@@ -1719,6 +1928,118 @@ SELECT * FROM v_camaras_inventario WHERE sector_codigo = 'I1' AND tipo_red = 'MT
                       </span>
                       {isImporting ? 'Importando...' : 'Descargar de Supabase'}
                     </button>
+                  </div>
+                </div>
+
+                {/* Sector Update Card */}
+                <div className="p-4 bg-gradient-to-r from-blue-50/70 via-indigo-50/50 to-purple-50/70 border border-blue-200 rounded-xl space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-[#004d99] text-white flex items-center justify-center">
+                        <span className="material-symbols-outlined text-[18px]">share_location</span>
+                      </div>
+                      <div>
+                        <div className="font-bold text-[14px] text-[#071e27]">
+                          Actualizar Sector de Todos los Elementos en Supabase
+                        </div>
+                        <div className="text-[12px] text-[#424752]">
+                          Aplica la regla en las tablas <code className="font-bold text-[#004d99]">inspection_photos</code> e <code className="font-bold text-[#004d99]">inspection_activities</code>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const sqlScript = `-- 1. AGREGAR COLUMNAS EN inspection_photos (Tabla principal de fotos y tramos)
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS sector TEXT;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS sector_code TEXT;
+
+-- 2. ACTUALIZAR SECTOR EN TODOS LOS ELEMENTOS
+UPDATE public.inspection_photos
+SET
+  sector_code = CASE
+    WHEN UPPER(name) LIKE '%I1%' THEN 'I1'
+    WHEN UPPER(name) LIKE '%I2%' THEN 'I2'
+    WHEN UPPER(name) LIKE '%TRONCAL%' THEN 'TRONCAL'
+    ELSE 'OTRO'
+  END,
+  sector = CASE
+    WHEN UPPER(name) LIKE '%I1%' THEN 'Intersección 1'
+    WHEN UPPER(name) LIKE '%I2%' THEN 'Intersección 2'
+    WHEN UPPER(name) LIKE '%TRONCAL%' THEN 'Troncal Principal'
+    ELSE 'Otros Sectores'
+  END;
+
+-- 3. ACTUALIZAR EN inspection_activities SOLO SI LA TABLA EXISTE
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables 
+    WHERE table_schema = 'public' AND table_name = 'inspection_activities'
+  ) THEN
+    ALTER TABLE public.inspection_activities ADD COLUMN IF NOT EXISTS sector TEXT;
+    ALTER TABLE public.inspection_activities ADD COLUMN IF NOT EXISTS sector_code TEXT;
+
+    UPDATE public.inspection_activities
+    SET
+      sector_code = CASE
+        WHEN UPPER(photo_name) LIKE '%I1%' THEN 'I1'
+        WHEN UPPER(photo_name) LIKE '%I2%' THEN 'I2'
+        WHEN UPPER(photo_name) LIKE '%TRONCAL%' THEN 'TRONCAL'
+        ELSE 'OTRO'
+      END,
+      sector = CASE
+        WHEN UPPER(photo_name) LIKE '%I1%' THEN 'Intersección 1'
+        WHEN UPPER(photo_name) LIKE '%I2%' THEN 'Intersección 2'
+        WHEN UPPER(photo_name) LIKE '%TRONCAL%' THEN 'Troncal Principal'
+        ELSE 'Otros Sectores'
+      END;
+  END IF;
+END $$;`;
+                          navigator.clipboard.writeText(sqlScript);
+                          setCopiedSectorSql(true);
+                          setTimeout(() => setCopiedSectorSql(false), 2500);
+                          onShowToast('¡SQL de sectores copiado al portapapeles!', 'success');
+                        }}
+                        className="px-3 py-1.5 bg-white border border-blue-300 hover:bg-blue-50 text-blue-800 text-xs font-bold rounded-lg flex items-center gap-1.5 transition-colors shadow-2xs"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">
+                          {copiedSectorSql ? 'check' : 'content_copy'}
+                        </span>
+                        <span>{copiedSectorSql ? 'Copiado' : 'Copiar SQL'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleUpdateSectors}
+                        disabled={isUpdatingSectors}
+                        className="px-4 py-2 bg-gradient-to-r from-[#004d99] to-[#1565c0] hover:from-[#003870] hover:to-[#0d47a1] disabled:bg-slate-400 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-all shadow-xs"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">
+                          {isUpdatingSectors ? 'refresh' : 'published_with_changes'}
+                        </span>
+                        <span>{isUpdatingSectors ? 'Actualizando sectores...' : 'Ejecutar en Supabase'}</span>
+                      </button>
+                    </div>
+                  </div>
+                  {/* Reglas visuales */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    <div className="bg-white/80 p-2 rounded-lg border border-blue-200/60 text-xs">
+                      <span className="font-bold text-blue-900 block">Nombre contiene I1</span>
+                      <span className="text-blue-700 text-[11px]">Intersección 1 (I1)</span>
+                    </div>
+                    <div className="bg-white/80 p-2 rounded-lg border border-purple-200/60 text-xs">
+                      <span className="font-bold text-purple-900 block">Nombre contiene I2</span>
+                      <span className="text-purple-700 text-[11px]">Intersección 2 (I2)</span>
+                    </div>
+                    <div className="bg-white/80 p-2 rounded-lg border border-amber-200/60 text-xs">
+                      <span className="font-bold text-amber-900 block">Nombre contiene TRONCAL</span>
+                      <span className="text-amber-700 text-[11px]">Troncal Principal (TRONCAL)</span>
+                    </div>
+                    <div className="bg-white/80 p-2 rounded-lg border border-slate-200/60 text-xs">
+                      <span className="font-bold text-slate-900 block">Demás casos</span>
+                      <span className="text-slate-600 text-[11px]">Otros Sectores (OTRO)</span>
+                    </div>
                   </div>
                 </div>
               </div>

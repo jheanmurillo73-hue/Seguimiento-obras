@@ -17,6 +17,7 @@ import {
   getPhotoNetworkInfo,
   getPipeNetworkOption,
   PipeNetworkType,
+  getElementSector,
 } from '../types';
 import { ALL_OPERATIONAL_MODULES, createFallbackAccess, isPrimaryAdmin, normalizeModules } from '../lib/accessControl';
 import { removeEvidenceFromSupabase, uploadEvidenceToSupabase } from './supabaseStorageService';
@@ -82,10 +83,16 @@ const serializePhotoToSupabaseRow = (
     ? (photo.cameraType || networkInfo.primary || 'MT')
     : null;
 
+  const sectorInfo = getElementSector(photo.name);
+  const resolvedSector = photo.sector || sectorInfo.label;
+  const resolvedSectorCode = photo.sectorCode || sectorInfo.code;
+
   return {
     id: photo.id,
     display_id: photo.displayId,
     name: photo.name,
+    sector: resolvedSector,
+    sector_code: resolvedSectorCode,
     image_url: cloudImageUrl,
     image_urls: serializeEvidenceTimeline(photo, cloudEvidenceUrls),
     date: photo.date,
@@ -449,6 +456,91 @@ export const supabaseService = {
     }
   },
 
+  // Updates sector and sector_code columns in all records across Supabase tables
+  updateAllSectorsInSupabase: async (): Promise<{
+    success: boolean;
+    updatedPhotosCount: number;
+    updatedActivitiesCount: number;
+    message: string;
+  }> => {
+    const client = getSupabaseClient();
+    if (!client || !isSupabaseConfigured()) {
+      return {
+        success: false,
+        updatedPhotosCount: 0,
+        updatedActivitiesCount: 0,
+        message: 'Supabase no está configurado o no se pudo inicializar.',
+      };
+    }
+
+    try {
+      // 1. Update inspection_photos
+      const { data: photos, error: photosError } = await client
+        .from('inspection_photos')
+        .select('id, name');
+
+      let updatedPhotosCount = 0;
+      if (photosError) {
+        console.warn('Error fetching photos to update sectors:', photosError.message);
+      } else if (Array.isArray(photos) && photos.length > 0) {
+        // Group by sector/sector_code or update each row
+        const updates = photos.map(async (row) => {
+          const s = getElementSector(row.name);
+          const { error: updErr } = await client
+            .from('inspection_photos')
+            .update({
+              sector: s.label,
+              sector_code: s.code,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', row.id);
+          if (!updErr) updatedPhotosCount++;
+        });
+        await Promise.all(updates);
+      }
+
+      // 2. Update inspection_activities (if table and records exist)
+      let updatedActivitiesCount = 0;
+      try {
+        const { data: activities, error: actError } = await client
+          .from('inspection_activities')
+          .select('id, photo_name');
+
+        if (!actError && Array.isArray(activities) && activities.length > 0) {
+          const actUpdates = activities.map(async (row) => {
+            const s = getElementSector(row.photo_name);
+            const { error: updActErr } = await client
+              .from('inspection_activities')
+              .update({
+                sector: s.label,
+                sector_code: s.code,
+              })
+              .eq('id', row.id);
+            if (!updActErr) updatedActivitiesCount++;
+          });
+          await Promise.all(actUpdates);
+        }
+      } catch (e) {
+        // Table or columns might not exist yet
+      }
+
+      return {
+        success: true,
+        updatedPhotosCount,
+        updatedActivitiesCount,
+        message: `Se actualizaron correctamente ${updatedPhotosCount} elementos en la columna sector de Supabase.`,
+      };
+    } catch (err: any) {
+      console.error('Error updating sectors in Supabase:', err);
+      return {
+        success: false,
+        updatedPhotosCount: 0,
+        updatedActivitiesCount: 0,
+        message: err.message || 'Error inesperado al actualizar sectores en Supabase.',
+      };
+    }
+  },
+
   // Photos: Fetch all inspection photos from Supabase
   fetchPhotos: async (): Promise<InspectionPhoto[] | null> => {
     const client = getSupabaseClient();
@@ -508,10 +600,14 @@ export const supabaseService = {
           ? (item.camera_type || 'MT')
           : undefined;
 
+        const sectorInfo = getElementSector(item.name);
+
         return {
         id: item.id,
         displayId: item.display_id || item.id,
         name: item.name || 'Sin título',
+        sector: item.sector || sectorInfo.label,
+        sectorCode: item.sector_code || sectorInfo.code,
         imageUrl: imageUrls[0] || item.image_url,
         imageUrls,
         evidenceTimeline,
@@ -894,9 +990,30 @@ ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS tramo_bt TEXT;
 ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS tramo_datos TEXT;
 ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS redes_list TEXT;
 
--- Sincronizar columnas auxiliares y tipo de red desde los ductos estructurados (pipe_conduits)
+-- Columnas de sector para cámaras y tramos de tubería
+-- Regla exacta:
+-- - Contiene 'I1' en su nombre -> Intersección 1 ('I1')
+-- - Contiene 'I2' en su nombre -> Intersección 2 ('I2')
+-- - Contiene 'TRONCAL' en su nombre -> Troncal Principal / Área Troncal ('TRONCAL')
+-- - Resto -> Otros Sectores ('OTRO')
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS sector TEXT;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS sector_code TEXT;
+
+-- Sincronizar columnas auxiliares, redes y sectores
 UPDATE public.inspection_photos
 SET
+  sector_code = CASE
+    WHEN UPPER(name) LIKE '%I1%' THEN 'I1'
+    WHEN UPPER(name) LIKE '%I2%' THEN 'I2'
+    WHEN UPPER(name) LIKE '%TRONCAL%' THEN 'TRONCAL'
+    ELSE 'OTRO'
+  END,
+  sector = CASE
+    WHEN UPPER(name) LIKE '%I1%' THEN 'Intersección 1'
+    WHEN UPPER(name) LIKE '%I2%' THEN 'Intersección 2'
+    WHEN UPPER(name) LIKE '%TRONCAL%' THEN 'Troncal Principal'
+    ELSE 'Otros Sectores'
+  END,
   camera_type = CASE WHEN element_type = 'tuberia' THEN NULL ELSE camera_type END,
   has_media_tension = (pipe_conduits::text ILIKE '%media_tension%' OR pipe_network_type = 'media_tension'),
   has_baja_tension = (pipe_conduits::text ILIKE '%baja_tension%' OR pipe_network_type = 'baja_tension'),
@@ -905,13 +1022,12 @@ SET
     CASE WHEN pipe_conduits::text ILIKE '%media_tension%' OR pipe_network_type = 'media_tension' THEN 'MT, ' ELSE '' END,
     CASE WHEN pipe_conduits::text ILIKE '%baja_tension%' OR pipe_network_type = 'baja_tension' THEN 'BT, ' ELSE '' END,
     CASE WHEN pipe_conduits::text ILIKE '%datos%' OR pipe_network_type = 'datos' OR lower(name) LIKE '%dato%' THEN 'DATOS' ELSE '' END
-  ))
-WHERE element_type = 'tuberia' OR tramo IS NOT NULL;
+  ));
 
 -- ============================================================
 -- VISTAS DE TRAMOS Y CANALIZACIONES DESGLOSADAS (MT, BT y DATOS)
 -- Desglosan cada ducto individual de pipe_conduits en una fila propia.
--- Esto garantiza que los tramos de DATOS y MEDIA TENSIÓN sean visibles y consultables individualmente en Supabase.
+-- Clasificados por Intersección 1 (I1), Intersección 2 (I2) y Área Troncal (TRONCAL).
 -- ============================================================
 
 CREATE OR REPLACE VIEW public.v_tramos_conduits AS
@@ -919,6 +1035,18 @@ SELECT
   p.id AS photo_id,
   p.display_id,
   p.name AS tramo_nombre,
+  CASE
+    WHEN UPPER(p.name) LIKE '%I1%' THEN 'I1'
+    WHEN UPPER(p.name) LIKE '%I2%' THEN 'I2'
+    WHEN UPPER(p.name) LIKE '%TRONCAL%' THEN 'TRONCAL'
+    ELSE 'OTRO'
+  END AS sector_codigo,
+  CASE
+    WHEN UPPER(p.name) LIKE '%I1%' THEN 'Intersección 1'
+    WHEN UPPER(p.name) LIKE '%I2%' THEN 'Intersección 2'
+    WHEN UPPER(p.name) LIKE '%TRONCAL%' THEN 'Troncal Principal'
+    ELSE 'Otros Sectores'
+  END AS sector_nombre,
   c.id AS conduit_id,
   c."networkType" AS red_codigo,
   CASE
@@ -981,10 +1109,25 @@ FROM public.v_tramos_conduits
 GROUP BY red_label, red_codigo
 ORDER BY red_label;
 
+-- Vista analítica de Resumen de Tramos de Tubería por Intersección / Sector
+CREATE OR REPLACE VIEW public.v_resumen_tramos_interseccion AS
+SELECT
+  sector_nombre AS sector,
+  sector_codigo,
+  COUNT(DISTINCT photo_id) AS total_tramos_fisicos,
+  COUNT(*) AS total_ductos,
+  ROUND(SUM(metraje_metros)::numeric, 2) AS total_metros_lineales,
+  ROUND(SUM(CASE WHEN red_codigo = 'media_tension' THEN metraje_metros ELSE 0 END)::numeric, 2) AS metros_mt,
+  ROUND(SUM(CASE WHEN red_codigo = 'baja_tension' THEN metraje_metros ELSE 0 END)::numeric, 2) AS metros_bt,
+  ROUND(SUM(CASE WHEN red_codigo = 'datos' THEN metraje_metros ELSE 0 END)::numeric, 2) AS metros_datos
+FROM public.v_tramos_conduits
+GROUP BY sector_nombre, sector_codigo
+ORDER BY sector_nombre;
+
 -- ============================================================
 -- VISTAS RELACIONALES Y RESÚMENES DE CÁMARAS POR INTERSECCIÓN / SECTOR
 -- Solución para evitar flat table y permitir consultas estructuradas por:
--- Sector (Intersección 1, Intersección 2, Troncal), Tipo de Red (MT, BT, Datos),
+-- Sector (Intersección 1 [I1], Intersección 2 [I2], Troncal [TRONCAL]), Tipo de Red (MT, BT, Datos),
 -- Estado de Ejecución (No iniciado / Pendiente, En proceso, Terminado), Fecha y Acta.
 -- ============================================================
 
@@ -996,15 +1139,15 @@ SELECT
   p.name AS nombre_completo,
   p.camera_code AS codigo_camara,
   CASE
-    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'I1'
-    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'I2'
-    WHEN p.name ~* 'TRONCAL' THEN 'TRONCAL'
+    WHEN UPPER(p.name) LIKE '%I1%' THEN 'I1'
+    WHEN UPPER(p.name) LIKE '%I2%' THEN 'I2'
+    WHEN UPPER(p.name) LIKE '%TRONCAL%' THEN 'TRONCAL'
     ELSE 'OTRO'
   END AS sector_codigo,
   CASE
-    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'Intersección 1'
-    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'Intersección 2'
-    WHEN p.name ~* 'TRONCAL' THEN 'Troncal Principal'
+    WHEN UPPER(p.name) LIKE '%I1%' THEN 'Intersección 1'
+    WHEN UPPER(p.name) LIKE '%I2%' THEN 'Intersección 2'
+    WHEN UPPER(p.name) LIKE '%TRONCAL%' THEN 'Troncal Principal'
     ELSE 'Otros Sectores'
   END AS sector_nombre,
   CASE
@@ -1033,29 +1176,58 @@ FROM public.inspection_photos p
 WHERE p.element_type = 'camara';
 
 -- 2. Vista de Resumen Multidimensional (Intersección, Tipo MT/BT/DATOS, Fecha, Acta y Estado)
+DROP VIEW IF EXISTS public.v_resumen_camaras_interseccion CASCADE;
+
 CREATE OR REPLACE VIEW public.v_resumen_camaras_interseccion AS
+WITH camaras_clasificadas AS (
+  SELECT
+    p.id,
+    p.name,
+    COALESCE(
+      p.sector,
+      CASE
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%I1%' THEN 'Intersección 1'
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%I2%' THEN 'Intersección 2'
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%TRONCAL%' THEN 'Troncal Principal'
+        ELSE 'Otros Sectores'
+      END
+    ) AS sector,
+    COALESCE(
+      p.sector_code,
+      CASE
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%I1%' THEN 'I1'
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%I2%' THEN 'I2'
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%TRONCAL%' THEN 'TRONCAL'
+        ELSE 'OTRO'
+      END
+    ) AS sector_codigo,
+    CASE
+      WHEN p.camera_type ILIKE '%dato%' OR p.camera_type = 'D' THEN 'DATOS'
+      WHEN p.camera_type = 'BT' THEN 'BT'
+      ELSE 'MT'
+    END AS tipo_red,
+    COALESCE(NULLIF(p.execution_status, ''), 'No iniciado') AS estado_ejecucion,
+    COALESCE(NULLIF(p.acta, ''), 'Sin Acta') AS acta,
+    COALESCE(NULLIF(p.date, ''), 'Sin Fecha') AS fecha_inspeccion,
+    p.image_urls
+  FROM public.inspection_photos p
+  WHERE p.element_type = 'camara' OR (p.element_type IS NULL AND p.camera_code IS NOT NULL)
+)
 SELECT
-  CASE
-    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'Intersección 1'
-    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'Intersección 2'
-    WHEN p.name ~* 'TRONCAL' THEN 'Troncal Principal'
-    ELSE 'Otros Sectores'
-  END AS sector,
-  CASE
-    WHEN p.camera_type ILIKE '%dato%' OR p.camera_type = 'D' THEN 'DATOS'
-    WHEN p.camera_type = 'BT' THEN 'BT'
-    ELSE 'MT'
-  END AS tipo_red,
-  COALESCE(NULLIF(p.execution_status, ''), 'No iniciado') AS estado_ejecucion,
-  COALESCE(NULLIF(p.acta, ''), 'Sin Acta') AS acta,
-  COALESCE(NULLIF(p.date, ''), 'Sin Fecha') AS fecha_inspeccion,
+  sector,
+  sector_codigo,
+  tipo_red,
+  estado_ejecucion,
+  acta,
+  fecha_inspeccion,
   COUNT(*) AS total_camaras,
-  COUNT(CASE WHEN p.image_urls IS NOT NULL AND p.image_urls != '' AND p.image_urls != '[]' THEN 1 END) AS con_fotos,
-  COUNT(CASE WHEN p.image_urls IS NULL OR p.image_urls = '' OR p.image_urls = '[]' THEN 1 END) AS pendientes_fotos
-FROM public.inspection_photos p
-WHERE p.element_type = 'camara'
+  COUNT(CASE WHEN image_urls IS NOT NULL AND image_urls != '' AND image_urls != '[]' THEN 1 END) AS con_fotos,
+  COUNT(CASE WHEN image_urls IS NULL OR image_urls = '' OR image_urls = '[]' THEN 1 END) AS pendientes_fotos,
+  STRING_AGG(name, ', ' ORDER BY name) AS elementos_nombres
+FROM camaras_clasificadas
 GROUP BY
   sector,
+  sector_codigo,
   tipo_red,
   estado_ejecucion,
   acta,
@@ -1066,38 +1238,64 @@ ORDER BY
   estado_ejecucion;
 
 -- 3. Vista Matriz Ejecutiva por Sector (Conteo instantáneo de cámaras por red y avance)
+DROP VIEW IF EXISTS public.v_matriz_camaras_por_sector CASCADE;
+
 CREATE OR REPLACE VIEW public.v_matriz_camaras_por_sector AS
+WITH camaras_clasificadas AS (
+  SELECT
+    p.id,
+    p.name,
+    COALESCE(
+      p.sector,
+      CASE
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%I1%' THEN 'Intersección 1'
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%I2%' THEN 'Intersección 2'
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%TRONCAL%' THEN 'Troncal Principal'
+        ELSE 'Otros Sectores'
+      END
+    ) AS sector,
+    COALESCE(
+      p.sector_code,
+      CASE
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%I1%' THEN 'I1'
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%I2%' THEN 'I2'
+        WHEN UPPER(COALESCE(p.name, '')) LIKE '%TRONCAL%' THEN 'TRONCAL'
+        ELSE 'OTRO'
+      END
+    ) AS sector_codigo,
+    p.camera_type,
+    p.element_type,
+    p.execution_status,
+    p.acta
+  FROM public.inspection_photos p
+  WHERE p.element_type = 'camara' OR (p.element_type IS NULL AND p.camera_code IS NOT NULL)
+)
 SELECT
-  CASE
-    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'Intersección 1'
-    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'Intersección 2'
-    WHEN p.name ~* 'TRONCAL' THEN 'Troncal Principal'
-    ELSE 'Otros Sectores'
-  END AS sector,
+  sector,
+  sector_codigo,
   COUNT(*) AS total_camaras,
   -- Por Tipo de Red
-  COUNT(CASE WHEN p.camera_type = 'MT' OR (p.camera_type IS NULL AND p.element_type = 'camara') THEN 1 END) AS camaras_mt,
-  COUNT(CASE WHEN p.camera_type = 'BT' THEN 1 END) AS camaras_bt,
-  COUNT(CASE WHEN p.camera_type ILIKE '%dato%' OR p.camera_type = 'D' THEN 1 END) AS camaras_datos,
+  COUNT(CASE WHEN camera_type = 'MT' OR (camera_type IS NULL AND element_type = 'camara') THEN 1 END) AS camaras_mt,
+  COUNT(CASE WHEN camera_type = 'BT' THEN 1 END) AS camaras_bt,
+  COUNT(CASE WHEN camera_type ILIKE '%dato%' OR camera_type = 'D' THEN 1 END) AS camaras_datos,
   -- Por Estado de Ejecución
-  COUNT(CASE WHEN p.execution_status = 'No iniciado' OR p.execution_status IS NULL OR p.execution_status = '' THEN 1 END) AS pendientes_no_iniciado,
-  COUNT(CASE WHEN p.execution_status = 'En proceso' THEN 1 END) AS en_progreso,
-  COUNT(CASE WHEN p.execution_status = 'Terminado' THEN 1 END) AS terminadas,
+  COUNT(CASE WHEN execution_status = 'No iniciado' OR execution_status IS NULL OR execution_status = '' THEN 1 END) AS pendientes_no_iniciado,
+  COUNT(CASE WHEN execution_status = 'En proceso' THEN 1 END) AS en_progreso,
+  COUNT(CASE WHEN execution_status = 'Terminado' THEN 1 END) AS terminadas,
   -- Por Acta
-  COUNT(CASE WHEN p.acta = 'Acta 1' THEN 1 END) AS en_acta_1,
-  COUNT(CASE WHEN p.acta = 'Acta 2' THEN 1 END) AS en_acta_2,
-  COUNT(CASE WHEN p.acta = 'Acta 3' THEN 1 END) AS en_acta_3,
-  COUNT(CASE WHEN p.acta IS NULL OR p.acta = '' THEN 1 END) AS sin_acta,
+  COUNT(CASE WHEN acta = 'Acta 1' THEN 1 END) AS en_acta_1,
+  COUNT(CASE WHEN acta = 'Acta 2' THEN 1 END) AS en_acta_2,
+  COUNT(CASE WHEN acta = 'Acta 3' THEN 1 END) AS en_acta_3,
+  COUNT(CASE WHEN acta IS NULL OR acta = '' THEN 1 END) AS sin_acta,
   -- Porcentaje de Avance Físico Estimado
   ROUND(
-    (COUNT(CASE WHEN p.execution_status = 'Terminado' THEN 1 END) * 100.0 +
-     COUNT(CASE WHEN p.execution_status = 'En proceso' THEN 1 END) * 50.0) /
+    (COUNT(CASE WHEN execution_status = 'Terminado' THEN 1 END) * 100.0 +
+     COUNT(CASE WHEN execution_status = 'En proceso' THEN 1 END) * 50.0) /
     NULLIF(COUNT(*), 0),
     1
   ) AS porcentaje_avance_estimado
-FROM public.inspection_photos p
-WHERE p.element_type = 'camara'
-GROUP BY sector
+FROM camaras_clasificadas
+GROUP BY sector, sector_codigo
 ORDER BY sector;
 
 -- 4. Vista de Resumen General por Acta (Cámaras, Tuberías y Metros Lineales)
@@ -1105,9 +1303,9 @@ CREATE OR REPLACE VIEW public.v_resumen_global_por_acta AS
 SELECT
   COALESCE(NULLIF(p.acta, ''), 'Sin Acta Asignada') AS acta,
   CASE
-    WHEN p.name ~* '(_I1\b|\bI1\b)' THEN 'Intersección 1'
-    WHEN p.name ~* '(_I2\b|\bI2\b)' THEN 'Intersección 2'
-    WHEN p.name ~* 'TRONCAL' THEN 'Troncal Principal'
+    WHEN UPPER(p.name) LIKE '%I1%' THEN 'Intersección 1'
+    WHEN UPPER(p.name) LIKE '%I2%' THEN 'Intersección 2'
+    WHEN UPPER(p.name) LIKE '%TRONCAL%' THEN 'Troncal Principal'
     ELSE 'Otros Sectores'
   END AS sector,
   COUNT(CASE WHEN p.element_type = 'camara' THEN 1 END) AS total_camaras,
@@ -1130,8 +1328,32 @@ CREATE TABLE IF NOT EXISTS public.inspection_activities (
   user_name TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'upload' CHECK (type IN ('upload', 'sync', 'edit', 'flag', 'verified')),
   user_id TEXT,
+  sector TEXT,
+  sector_code TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'inspection_activities') THEN
+    ALTER TABLE public.inspection_activities ADD COLUMN IF NOT EXISTS sector TEXT;
+    ALTER TABLE public.inspection_activities ADD COLUMN IF NOT EXISTS sector_code TEXT;
+    UPDATE public.inspection_activities
+    SET
+      sector_code = CASE
+        WHEN UPPER(photo_name) LIKE '%I1%' THEN 'I1'
+        WHEN UPPER(photo_name) LIKE '%I2%' THEN 'I2'
+        WHEN UPPER(photo_name) LIKE '%TRONCAL%' THEN 'TRONCAL'
+        ELSE 'OTRO'
+      END,
+      sector = CASE
+        WHEN UPPER(photo_name) LIKE '%I1%' THEN 'Intersección 1'
+        WHEN UPPER(photo_name) LIKE '%I2%' THEN 'Intersección 2'
+        WHEN UPPER(photo_name) LIKE '%TRONCAL%' THEN 'Troncal Principal'
+        ELSE 'Otros Sectores'
+      END;
+  END IF;
+END $$;
 
 -- 4. TABLA DE COLECCIONES Y CARPETAS DE INSPECCIÓN (inspection_collections)
 CREATE TABLE IF NOT EXISTS public.inspection_collections (
