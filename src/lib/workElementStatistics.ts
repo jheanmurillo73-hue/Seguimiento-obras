@@ -1,4 +1,4 @@
-import { ExecutionStatus, InspectionPhoto, getElementType, getPhotoProgressPercentage, getPhotoNetworkInfo, PipeNetworkType } from '../types';
+import { ExecutionStatus, InspectionPhoto, getElementType, getPhotoProgressPercentage, getPhotoNetworkInfo, PipeNetworkType, getPhotoRealLinearMeters } from '../types';
 
 export const EXECUTION_STATUSES: ReadonlyArray<ExecutionStatus> = ['No iniciado', 'En proceso', 'Terminado'];
 
@@ -72,16 +72,8 @@ const getPipeConduits = (photo: InspectionPhoto) => {
 };
 
 export const getPhotoPipeMeters = (photo: InspectionPhoto): number => {
-  const conduits = photo.pipeConduits;
-  if (conduits && conduits.length > 0) {
-    const sum = conduits.reduce((total, conduit) => {
-      const parsed = Number(conduit.meters);
-      return total + (Number.isFinite(parsed) && parsed > 0 ? parsed : 0);
-    }, 0);
-    if (sum > 0) return sum;
-  }
-  const directMeters = Number(photo.metraje);
-  return Number.isFinite(directMeters) && directMeters > 0 ? directMeters : 0;
+  const realMeters = getPhotoRealLinearMeters(photo);
+  return realMeters.totalLinearMeters > 0 ? realMeters.totalLinearMeters : 0;
 };
 
 const getTubeQuantity = (configuration?: string): number => {

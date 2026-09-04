@@ -3,7 +3,7 @@
  * objeto seleccionado; una tubería nunca guarda datos de cámara, y viceversa.
  */
 import React, { useRef, useState } from 'react';
-import { CableGauge, CableType, CABLE_TYPE_OPTIONS, getCableGaugeOptionsForPlanArea, InspectionPhoto, ExecutionStatus, CameraCode, CameraType, ElementType, ActaLabelPosition, getElectricalElementOption, getElectricalPlanArea, getElementType, getElementSector, getPipeNetworkOption, PIPE_NETWORK_OPTIONS, PipeConduit, PipeNetworkType, getDefaultPipeConfiguration, normalizeEvidenceTimeline, normalizePipeConduits } from '../types';
+import { CableGauge, CableType, CABLE_TYPE_OPTIONS, getCableTypeOption, getCableGaugeOptionsForPlanArea, InspectionPhoto, ExecutionStatus, CameraCode, CameraType, ElementType, ActaLabelPosition, getElectricalElementOption, getElectricalPlanArea, getElementType, getElementSector, getPipeNetworkOption, PIPE_NETWORK_OPTIONS, PipeConduit, PipeNetworkType, getDefaultPipeConfiguration, normalizeEvidenceTimeline, normalizePipeConduits, PlanArea } from '../types';
 import { WAREHOUSE_LOCATIONS, CAMERA_CODES, CAMERA_TYPES } from '../data/mockData';
 import { ACTA_ITEM_OPTIONS, getActaItemKey } from '../data/actaItems';
 import { compressEvidenceImageForUpload, formatImageBytes } from '../services/deviceStorageService';
@@ -108,7 +108,10 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const electricalOption = getElectricalElementOption(photo.electricalType);
   const electricalArea = getElectricalPlanArea(photo.electricalType);
-  const cableGaugeOptions = getCableGaugeOptionsForPlanArea(photo.planArea);
+  const effectiveCableArea: PlanArea = photo.electricalType === 'cableado'
+    ? (cableType === 'alumbrado' ? 'electrical_lighting' : 'electrical_mt')
+    : photo.planArea;
+  const cableGaugeOptions = getCableGaugeOptionsForPlanArea(effectiveCableArea);
   const selectedActaItems = actaItemKeys
     .map((key) => ACTA_ITEM_OPTIONS.find((item) => getActaItemKey(item) === key))
     .filter((item): item is typeof ACTA_ITEM_OPTIONS[number] => Boolean(item));
@@ -246,6 +249,12 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
       pipeNetworkType: elementType === 'tuberia' ? primaryConduit?.networkType : undefined,
       pipeColor: elementType === 'tuberia' && primaryConduit ? getPipeNetworkOption(primaryConduit.networkType).color : undefined,
       pipeConduits: elementType === 'tuberia' ? savedPipeConduits : undefined,
+      planArea: photo.electricalType === 'cableado'
+        ? (cableType === 'alumbrado' ? 'electrical_lighting' : 'electrical_mt')
+        : (photo.electricalType === 'poste_alumbrado' ? 'electrical_lighting' : photo.planArea),
+      electricalColor: photo.electricalType === 'cableado'
+        ? getCableTypeOption(cableType).color
+        : photo.electricalColor,
       cableType: photo.electricalType === 'cableado' ? cableType : undefined,
       cableGauge: photo.electricalType === 'cableado' ? cableGauge : undefined,
       cableMeters: photo.electricalType === 'cableado' ? cableMeters.trim() || undefined : undefined,
@@ -794,7 +803,19 @@ export const EditPhotoModal: React.FC<EditPhotoModalProps> = ({
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <div>
                   <label className="block text-[12px] font-bold text-[#173f58]">Tipo de cable</label>
-                  <select value={cableType} onChange={(event) => setCableType(event.target.value as CableType)} className="mt-1.5 w-full rounded-lg border border-[#bcd4e6] bg-white p-2 text-[13px] text-[#173f58] outline-none focus:border-[#0369a1]">
+                  <select
+                    value={cableType}
+                    onChange={(event) => {
+                      const nextType = event.target.value as CableType;
+                      setCableType(nextType);
+                      const nextArea: PlanArea = nextType === 'alumbrado' ? 'electrical_lighting' : 'electrical_mt';
+                      const nextGauges = getCableGaugeOptionsForPlanArea(nextArea);
+                      if (!nextGauges.includes(cableGauge)) {
+                        setCableGauge(nextGauges[0]);
+                      }
+                    }}
+                    className="mt-1.5 w-full rounded-lg border border-[#bcd4e6] bg-white p-2 text-[13px] text-[#173f58] outline-none focus:border-[#0369a1]"
+                  >
                     {CABLE_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
                 </div>

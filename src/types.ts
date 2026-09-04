@@ -72,10 +72,39 @@ export const getElectricalElementOption = (value?: string) =>
 export const isElectricalElementType = (value?: string): value is ElectricalElementType =>
   ELECTRICAL_ELEMENT_OPTIONS.some((option) => option.value === value);
 
-export const getElectricalPlanArea = (electricalType?: ElectricalElementType): PlanArea => {
-  if (electricalType === 'poste_alumbrado') return 'electrical_lighting';
-  // Reorganización: Tablero de distribución, Malla a tierra y resto de elementos eléctricos se agrupan en MT
+export const getElectricalPlanArea = (
+  electricalType?: ElectricalElementType,
+  cableType?: CableType,
+  currentPlanArea?: PlanArea,
+): PlanArea => {
+  if (currentPlanArea === 'electrical_lighting' || electricalType === 'poste_alumbrado' || cableType === 'alumbrado') {
+    return 'electrical_lighting';
+  }
+  if (currentPlanArea === 'electrical_bt' || cableType === 'baja_tension') {
+    return 'electrical_bt';
+  }
   return 'electrical_mt';
+};
+
+export const getPhotoPlanArea = (photo: {
+  planArea?: PlanArea;
+  electricalType?: ElectricalElementType;
+  cableType?: CableType;
+  elementType?: ElementType;
+}): PlanArea => {
+  if (photo.cableType === 'alumbrado' || photo.electricalType === 'poste_alumbrado' || photo.planArea === 'electrical_lighting') {
+    return 'electrical_lighting';
+  }
+  if (photo.planArea === 'electrical_mt') {
+    return 'electrical_mt';
+  }
+  if (photo.planArea === 'electrical_bt') {
+    return 'electrical_mt';
+  }
+  if (photo.planArea === 'electrical') {
+    return getElectricalPlanArea(photo.electricalType, photo.cableType, photo.planArea);
+  }
+  return photo.planArea || 'civil';
 };
 
 export type PipeNetworkType = 'media_tension' | 'baja_tension' | 'datos';
@@ -328,6 +357,7 @@ export interface InspectionPhoto {
   status: SyncStatus;
   executionStatus: ExecutionStatus;
   progressPercentage?: number; // Porcentaje de avance de 0 a 100
+  linearMeters?: number; // Metros lineales reales (multiplicador * distancia)
   category: PhotoCategory;
   categoryLabel: string;
   location: string;
@@ -486,6 +516,76 @@ export const getPhotoProgressPercentage = (
   if (photo.executionStatus === 'Terminado') return 100;
   if (photo.executionStatus === 'No iniciado') return 0;
   return 50;
+};
+
+/**
+ * Extrae el multiplicador de ductos de una configuración de tramo.
+ * Ejemplos:
+ *  - "2x4\""  -> 2
+ *  - "20x6\"" -> 20
+ *  - "3x4\""  -> 3
+ *  - "4\""    -> 1
+ */
+export const extractTramoMultiplier = (configuration?: string): number => {
+  if (!configuration) return 1;
+  const cleaned = configuration.trim();
+  const match = cleaned.match(/^(\d+)\s*(?:x|[X*])/);
+  if (match) {
+    const mult = parseInt(match[1], 10);
+    return Number.isFinite(mult) && mult > 0 ? mult : 1;
+  }
+  return 1;
+};
+
+export const getTramoMultiplier = extractTramoMultiplier;
+
+/**
+ * Calcula los metros lineales reales multiplicando el multiplicador de ductos por la distancia física.
+ * Ejemplos:
+ *  - 2x4", 100 mts  -> 2 * 100 = 200 metros lineales
+ *  - 20x6", 100 mts -> 20 * 100 = 2000 metros lineales
+ */
+export const calculateRealLinearMeters = (configuration?: string, meters?: string | number): number => {
+  const dist = typeof meters === 'number' ? meters : parseFloat(String(meters || '0').replace(',', '.'));
+  if (!Number.isFinite(dist) || dist <= 0) return 0;
+  const mult = extractTramoMultiplier(configuration);
+  return Math.round(mult * dist * 100) / 100;
+};
+
+/**
+ * Calcula los metros lineales reales acumulados para un elemento de tipo tubería o tramo.
+ */
+export const getPhotoRealLinearMeters = (photo: InspectionPhoto): {
+  totalLinearMeters: number;
+  distanceMeters: number;
+  multiplier: number;
+} => {
+  const conduits = photo.pipeConduits;
+  if (conduits && conduits.length > 0) {
+    let totalLinear = 0;
+    let totalDist = 0;
+    let maxMult = 1;
+    conduits.forEach((c) => {
+      const dist = parseFloat(String(c.meters || '0').replace(',', '.')) || 0;
+      const mult = extractTramoMultiplier(c.configuration);
+      totalLinear += mult * dist;
+      totalDist += dist;
+      if (mult > maxMult) maxMult = mult;
+    });
+    return {
+      totalLinearMeters: Math.round(totalLinear * 100) / 100,
+      distanceMeters: Math.round(totalDist * 100) / 100,
+      multiplier: maxMult,
+    };
+  }
+
+  const dist = parseFloat(String(photo.metraje || '0').replace(',', '.')) || 0;
+  const mult = extractTramoMultiplier(photo.tramo);
+  return {
+    totalLinearMeters: Math.round(mult * dist * 100) / 100,
+    distanceMeters: Math.round(dist * 100) / 100,
+    multiplier: mult,
+  };
 };
 
 export type ActivityActionCategory =

@@ -1,4 +1,4 @@
-import { InspectionPhoto, getPhotoProgressPercentage } from '../types';
+import { InspectionPhoto, getPhotoProgressPercentage, getPhotoRealLinearMeters } from '../types';
 
 export interface SectorMetric {
   sectorKey: 'TODOS' | 'I1' | 'I2' | 'TRONCAL' | 'OTRO';
@@ -25,12 +25,14 @@ export interface SectorMetric {
   datosEnProceso: number;
   datosAvance: number;
 
-  // Tramos y Ductería (Metros Lineales)
+  // Tramos y Ductería (Metros Lineales Reales = Multiplicador × Distancia)
   tramosTotal: number;
-  metrosTotales: number;
-  metrosEjecutados: number;
+  metrosTotales: number; // Metros lineales reales totales (ej: 2x4" 100m = 200m)
+  metrosEjecutados: number; // Metros lineales reales ejecutados (ponderado por % de avance)
   metrosPendientes: number;
   metrosAvancePonderado: number; // 0 - 100%
+  distanciaTrazaTotal: number; // Distancia física de traza / zanja (sin multiplicar)
+  distanciaTrazaEjecutada: number;
 
   // Actas
   itemsPorActa: Record<string, number>;
@@ -65,6 +67,8 @@ export interface ObraGlobalMetrics {
   metrosEjecutados: number;
   metrosPendientes: number;
   metrosAvancePonderado: number;
+  distanciaTrazaTotal: number;
+  distanciaTrazaEjecutada: number;
 
   // Resúmenes por Sector
   sectores: Record<'I1' | 'I2' | 'TRONCAL' | 'OTRO', SectorMetric>;
@@ -156,10 +160,15 @@ export function calculateObraMetrics(
     const isEnProceso = !isTerminado && (execStatus === 'En proceso' || progressPct > 0);
     const isNoIniciado = !isTerminado && !isEnProceso;
 
-    // Metraje para tuberías
-    const metrajeTotal = isTuberia ? (Number(p.metraje) || 0) : 0;
+    // Metraje para tuberías: Cálculo de metros lineales reales (multiplicador * distancia)
+    const realMeters = isTuberia ? getPhotoRealLinearMeters(p) : { totalLinearMeters: 0, distanceMeters: 0, multiplier: 1 };
+    const metrajeTotal = realMeters.totalLinearMeters;
+    const distanciaTraza = realMeters.distanceMeters;
     const metrajeEjecutado = isTuberia
-      ? (isTerminado ? metrajeTotal : isEnProceso ? metrajeTotal * 0.5 : 0)
+      ? Math.round(metrajeTotal * (progressPct / 100) * 100) / 100
+      : 0;
+    const distanciaTrazaEjecutada = isTuberia
+      ? Math.round(distanciaTraza * (progressPct / 100) * 100) / 100
       : 0;
 
     const acta = p.acta && p.acta.trim() !== '' ? p.acta.trim() : 'Sin Acta';
@@ -184,6 +193,9 @@ export function calculateObraMetrics(
       isNoIniciado,
       metrajeTotal,
       metrajeEjecutado,
+      distanciaTraza,
+      distanciaTrazaEjecutada,
+      tramoMultiplier: realMeters.multiplier,
       acta,
       hasPendiente,
     };
@@ -215,6 +227,8 @@ export function calculateObraMetrics(
     metrosEjecutados: 0,
     metrosPendientes: 0,
     metrosAvancePonderado: 0,
+    distanciaTrazaTotal: 0,
+    distanciaTrazaEjecutada: 0,
     itemsPorActa: {},
     pendientesPorActa: {},
   });
@@ -244,7 +258,7 @@ export function calculateObraMetrics(
         s.camarasTotal++;
 
         // CRÍTICO: Si no está iniciado, la contribución es exactamente 0.
-        // Si está terminado, 100%. Si está en proceso, 50% (o progressPct si es > 0).
+        // Si está terminado, 100%. Si está en proceso, progressPct (o 50 si no está especificado).
         const contribPct = item.isTerminado ? 100 : item.isEnProceso ? (item.progressPct > 0 ? item.progressPct : 50) : 0;
         camPonderado += contribPct;
 
@@ -280,6 +294,8 @@ export function calculateObraMetrics(
         s.tramosTotal++;
         s.metrosTotales += item.metrajeTotal;
         s.metrosEjecutados += item.metrajeEjecutado;
+        s.distanciaTrazaTotal += item.distanciaTraza;
+        s.distanciaTrazaEjecutada += item.distanciaTrazaEjecutada;
       }
     });
 
@@ -288,8 +304,12 @@ export function calculateObraMetrics(
     s.btAvance = s.btTotal > 0 ? Math.round((btPonderado / (s.btTotal * 100)) * 1000) / 10 : 0;
     s.datosAvance = s.datosTotal > 0 ? Math.round((datosPonderado / (s.datosTotal * 100)) * 1000) / 10 : 0;
 
-    s.metrosPendientes = Math.max(0, s.metrosTotales - s.metrosEjecutados);
+    s.metrosTotales = Math.round(s.metrosTotales * 100) / 100;
+    s.metrosEjecutados = Math.round(s.metrosEjecutados * 100) / 100;
+    s.metrosPendientes = Math.max(0, Math.round((s.metrosTotales - s.metrosEjecutados) * 100) / 100);
     s.metrosAvancePonderado = s.metrosTotales > 0 ? Math.round((s.metrosEjecutados / s.metrosTotales) * 1000) / 10 : 0;
+    s.distanciaTrazaTotal = Math.round(s.distanciaTrazaTotal * 100) / 100;
+    s.distanciaTrazaEjecutada = Math.round(s.distanciaTrazaEjecutada * 100) / 100;
 
     return s;
   };
@@ -402,6 +422,8 @@ export function calculateObraMetrics(
     metrosEjecutados: globalSector.metrosEjecutados,
     metrosPendientes: globalSector.metrosPendientes,
     metrosAvancePonderado: globalSector.metrosAvancePonderado,
+    distanciaTrazaTotal: globalSector.distanciaTrazaTotal,
+    distanciaTrazaEjecutada: globalSector.distanciaTrazaEjecutada,
     sectores: sectoresMap,
     actasDisponibles: ['TODAS', ...actasArr],
     totalPendientes: allParsed.filter((i) => i.hasPendiente).length,

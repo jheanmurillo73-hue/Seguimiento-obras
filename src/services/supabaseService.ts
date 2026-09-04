@@ -18,9 +18,17 @@ import {
   getPipeNetworkOption,
   PipeNetworkType,
   getElementSector,
+  getPhotoProgressPercentage,
+  getPhotoRealLinearMeters,
 } from '../types';
 import { ALL_OPERATIONAL_MODULES, createFallbackAccess, isPrimaryAdmin, normalizeModules } from '../lib/accessControl';
 import { removeEvidenceFromSupabase, uploadEvidenceToSupabase } from './supabaseStorageService';
+import {
+  saveElementProgress,
+  getElementProgress,
+  encodeProgressInFieldNotes,
+  decodeProgressFromFieldNotes,
+} from '../lib/elementProgressStorage';
 
 const isElementType = (value: unknown): value is ElementType =>
   value === 'caja' || value === 'camara' || value === 'tuberia' || value === 'electrico';
@@ -87,6 +95,11 @@ const serializePhotoToSupabaseRow = (
   const resolvedSector = photo.sector || sectorInfo.label;
   const resolvedSectorCode = photo.sectorCode || sectorInfo.code;
 
+  const progressPercentage = getPhotoProgressPercentage(photo);
+  saveElementProgress(photo.id, progressPercentage);
+  const encodedFieldNotes = encodeProgressInFieldNotes(photo.fieldNotes, progressPercentage);
+  const realLinearMeters = isPipe ? getPhotoRealLinearMeters(photo).totalLinearMeters : null;
+
   return {
     id: photo.id,
     display_id: photo.displayId,
@@ -99,6 +112,8 @@ const serializePhotoToSupabaseRow = (
     date_raw: photo.dateRaw,
     status: photo.status,
     execution_status: photo.executionStatus,
+    progress_percentage: progressPercentage,
+    linear_meters: realLinearMeters,
     category: photo.category,
     category_label: photo.categoryLabel,
     location: photo.location,
@@ -125,7 +140,7 @@ const serializePhotoToSupabaseRow = (
     inspector_avatar: photo.inspectorAvatar,
     type: photo.type,
     verified: photo.verified,
-    field_notes: photo.fieldNotes || '',
+    field_notes: encodedFieldNotes,
     requires_immediate_action: photo.requiresImmediateAction || false,
     file_size: photo.fileSize || '1.4 MB',
     resolution: photo.resolution || '1920x1080',
@@ -412,7 +427,16 @@ export const supabaseService = {
       }
       const cloudImageUrl = cloudEvidenceUrls[0] || (photo.imageUrl.startsWith('data:image/') ? '' : photo.imageUrl);
       const row = serializePhotoToSupabaseRow(photo, cloudImageUrl, cloudEvidenceUrls, userId);
-      const { error } = await client.from('inspection_photos').upsert(row);
+      let { error } = await client.from('inspection_photos').upsert(row);
+
+      // Si las columnas progress_percentage o linear_meters aún no existen en Supabase, reintentar sin ellas
+      if (error && (error.code === '42703' || error.message.includes('progress_percentage') || error.message.includes('linear_meters') || error.message.includes('PGRST204'))) {
+        const fallbackRow = { ...row };
+        delete (fallbackRow as any).progress_percentage;
+        delete (fallbackRow as any).linear_meters;
+        const retryRes = await client.from('inspection_photos').upsert(fallbackRow);
+        error = retryRes.error;
+      }
 
       if (error) {
         console.warn('Supabase upsert note:', error.message);
@@ -437,14 +461,24 @@ export const supabaseService = {
     }
 
     try {
-    const cloudEvidenceByPhoto = await Promise.all(photos.map((photo) => getCloudEvidenceUrls(photo)));
-    const records = photos.map((photo, index) => {
-      const cloudEvidenceUrls = cloudEvidenceByPhoto[index] || [];
-      const cloudImageUrl = cloudEvidenceUrls[0] || (photo.imageUrl.startsWith('data:image/') ? '' : photo.imageUrl);
-      return serializePhotoToSupabaseRow(photo, cloudImageUrl, cloudEvidenceUrls, userId);
-    });
+      const cloudEvidenceByPhoto = await Promise.all(photos.map((photo) => getCloudEvidenceUrls(photo)));
+      const records = photos.map((photo, index) => {
+        const cloudEvidenceUrls = cloudEvidenceByPhoto[index] || [];
+        const cloudImageUrl = cloudEvidenceUrls[0] || (photo.imageUrl.startsWith('data:image/') ? '' : photo.imageUrl);
+        return serializePhotoToSupabaseRow(photo, cloudImageUrl, cloudEvidenceUrls, userId);
+      });
 
-      const { error } = await client.from('inspection_photos').upsert(records);
+      let { error } = await client.from('inspection_photos').upsert(records);
+      if (error && (error.code === '42703' || error.message.includes('progress_percentage') || error.message.includes('linear_meters') || error.message.includes('PGRST204'))) {
+        const fallbackRecords = records.map((r) => {
+          const clone = { ...r };
+          delete (clone as any).progress_percentage;
+          delete (clone as any).linear_meters;
+          return clone;
+        });
+        const retryRes = await client.from('inspection_photos').upsert(fallbackRecords);
+        error = retryRes.error;
+      }
       if (error) {
         console.warn('Error in bulkSyncPhotos:', error.message);
         return { success: 0, failed: photos.length };
@@ -602,6 +636,24 @@ export const supabaseService = {
 
         const sectorInfo = getElementSector(item.name);
 
+        const decodedNotes = decodeProgressFromFieldNotes(item.field_notes);
+        const localProgress = getElementProgress(item.id);
+        const resolvedProgress =
+          typeof item.progress_percentage === 'number' && !Number.isNaN(item.progress_percentage)
+            ? Math.max(0, Math.min(100, Math.round(item.progress_percentage)))
+            : localProgress !== undefined
+              ? localProgress
+              : decodedNotes.progress !== undefined
+                ? decodedNotes.progress
+                : item.execution_status === 'Terminado'
+                  ? 100
+                  : item.execution_status === 'No iniciado'
+                    ? 0
+                    : 50;
+
+        // Persistir en caché local inmediatamente para que nunca se pierda al recargar
+        saveElementProgress(item.id, resolvedProgress);
+
         return {
         id: item.id,
         displayId: item.display_id || item.id,
@@ -635,9 +687,11 @@ export const supabaseService = {
           ? item.pipe_color
           : (elementType === 'tuberia' ? getPipeNetworkOption(resolvedPipeNetworkType).color : undefined),
         pipeConduits: finalPipeConduits,
-        planArea: item.plan_area === 'electrical_mt' || item.plan_area === 'electrical_bt' || item.plan_area === 'electrical_lighting'
-          ? item.plan_area
-          : item.plan_area === 'electrical' ? 'electrical_mt' : 'civil',
+        planArea: item.cable_type === 'alumbrado' || item.electrical_type === 'poste_alumbrado' || item.plan_area === 'electrical_lighting'
+          ? 'electrical_lighting'
+          : item.plan_area === 'electrical_mt' || item.plan_area === 'electrical_bt'
+            ? item.plan_area
+            : item.plan_area === 'electrical' ? 'electrical_mt' : 'civil',
         electricalType: [
           'transformador', 'tablero_baja_tension', 'tablero_distribucion', 'barrajes_elastomericos',
           'malla_tierra', 'poste_media_tension', 'poste_alumbrado', 'reconectador', 'cableado',
@@ -657,7 +711,8 @@ export const supabaseService = {
         inspectorAvatar: item.inspector_avatar || '',
         type: item.type || 'Fotografía',
         verified: Boolean(item.verified),
-        fieldNotes: item.field_notes || '',
+        fieldNotes: decodedNotes.cleanFieldNotes,
+        progressPercentage: resolvedProgress,
         requiresImmediateAction: Boolean(item.requires_immediate_action),
         fileSize: item.file_size || '1.4 MB',
         resolution: item.resolution || '1920x1080',
@@ -768,7 +823,8 @@ export const supabaseService = {
     }
 
     try {
-      const { error } = await client.from('inspection_activities').upsert({
+      const sectorInfo = getElementSector(activity.photoName);
+      const activityRow = {
         id: activity.id,
         timestamp: activity.timestamp,
         action: activity.action,
@@ -777,8 +833,22 @@ export const supabaseService = {
         user_name: activity.user,
         type: activity.type,
         user_id: userId,
+        sector: sectorInfo.label,
+        sector_code: sectorInfo.code,
+        progress_percentage: getElementProgress(activity.photoId) ?? null,
         created_at: new Date().toISOString(),
-      });
+      };
+
+      let { error } = await client.from('inspection_activities').upsert(activityRow);
+
+      if (error && (error.code === '42703' || error.message.includes('progress_percentage') || error.message.includes('sector') || error.message.includes('PGRST204'))) {
+        const fallback = { ...activityRow };
+        delete (fallback as any).progress_percentage;
+        delete (fallback as any).sector;
+        delete (fallback as any).sector_code;
+        const retry = await client.from('inspection_activities').upsert(fallback);
+        error = retry.error;
+      }
 
       if (error) {
         console.warn('Error logging activity to Supabase:', error.message);
@@ -902,6 +972,8 @@ CREATE TABLE IF NOT EXISTS public.inspection_photos (
   date_raw TEXT,
   status TEXT NOT NULL DEFAULT 'Synced' CHECK (status IN ('Synced', 'In Progress', 'Flagged')),
   execution_status TEXT NOT NULL DEFAULT 'No iniciado' CHECK (execution_status IN ('No iniciado', 'En proceso', 'Terminado')),
+  progress_percentage NUMERIC DEFAULT 0 CHECK (progress_percentage >= 0 AND progress_percentage <= 100),
+  linear_meters NUMERIC DEFAULT 0,
   category TEXT NOT NULL DEFAULT 'inspection',
   category_label TEXT NOT NULL DEFAULT 'Inspección General',
   location TEXT NOT NULL DEFAULT 'Bodega 1',
@@ -941,6 +1013,10 @@ CREATE TABLE IF NOT EXISTS public.inspection_photos (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS progress_percentage NUMERIC DEFAULT 0;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS linear_meters NUMERIC DEFAULT 0;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS latitude NUMERIC;
+ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS longitude NUMERIC;
 ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS plan_x NUMERIC CHECK (plan_x >= 0 AND plan_x <= 100);
 ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS plan_y NUMERIC CHECK (plan_y >= 0 AND plan_y <= 100);
 ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS plan_end_x NUMERIC CHECK (plan_end_x >= 0 AND plan_end_x <= 100);
@@ -999,6 +1075,28 @@ ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS redes_list TEXT;
 ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS sector TEXT;
 ALTER TABLE public.inspection_photos ADD COLUMN IF NOT EXISTS sector_code TEXT;
 
+-- Sincronizar porcentajes de avance iniciales si son nulos
+UPDATE public.inspection_photos
+SET progress_percentage = CASE
+  WHEN execution_status = 'Terminado' THEN 100
+  WHEN execution_status = 'No iniciado' THEN 0
+  ELSE 50
+END
+WHERE progress_percentage IS NULL;
+
+-- Sincronizar metros lineales reales iniciales (Multiplicador x Distancia)
+UPDATE public.inspection_photos
+SET linear_meters = CASE
+  WHEN element_type = 'tuberia' OR tramo IS NOT NULL THEN
+    ROUND(
+      COALESCE(NULLIF(SUBSTRING(TRIM(tramo) FROM '^([0-9]+)\s*[xX*]'), '')::numeric, 1) *
+      COALESCE(NULLIF(metraje, '')::numeric, 0),
+      2
+    )
+  ELSE 0
+END
+WHERE linear_meters IS NULL OR linear_meters = 0;
+
 -- Sincronizar columnas auxiliares, redes y sectores
 UPDATE public.inspection_photos
 SET
@@ -1026,9 +1124,16 @@ SET
 
 -- ============================================================
 -- VISTAS DE TRAMOS Y CANALIZACIONES DESGLOSADAS (MT, BT y DATOS)
--- Desglosan cada ducto individual de pipe_conduits en una fila propia.
--- Clasificados por Intersección 1 (I1), Intersección 2 (I2) y Área Troncal (TRONCAL).
+-- Incluyen multiplicador de tramo, distancia y metros lineales reales (multiplicador * distancia)
 -- ============================================================
+
+DROP VIEW IF EXISTS public.v_tramos_redes CASCADE;
+DROP VIEW IF EXISTS public.v_tramos_datos CASCADE;
+DROP VIEW IF EXISTS public.v_tramos_media_tension CASCADE;
+DROP VIEW IF EXISTS public.v_tramos_baja_tension CASCADE;
+DROP VIEW IF EXISTS public.v_resumen_redes CASCADE;
+DROP VIEW IF EXISTS public.v_resumen_tramos_interseccion CASCADE;
+DROP VIEW IF EXISTS public.v_tramos_conduits CASCADE;
 
 CREATE OR REPLACE VIEW public.v_tramos_conduits AS
 SELECT
@@ -1056,7 +1161,25 @@ SELECT
     ELSE COALESCE(c."networkType", 'Media Tensión (MT)')
   END AS red_label,
   c.configuration AS diametro_configuracion,
+  COALESCE(
+    NULLIF(SUBSTRING(TRIM(c.configuration) FROM '^([0-9]+)\s*[xX*]'), '')::numeric,
+    1
+  ) AS multiplicador_tramo,
+  COALESCE(NULLIF(c.meters, '')::numeric, NULLIF(p.metraje, '')::numeric, 0) AS distancia_metros,
+  ROUND(
+    (COALESCE(NULLIF(SUBSTRING(TRIM(c.configuration) FROM '^([0-9]+)\s*[xX*]'), '')::numeric, 1) *
+     COALESCE(NULLIF(c.meters, '')::numeric, NULLIF(p.metraje, '')::numeric, 0))::numeric,
+    2
+  ) AS metros_lineales_reales,
   COALESCE(NULLIF(c.meters, '')::numeric, NULLIF(p.metraje, '')::numeric, 0) AS metraje_metros,
+  COALESCE(
+    p.progress_percentage,
+    CASE
+      WHEN p.execution_status = 'Terminado' THEN 100
+      WHEN p.execution_status = 'No iniciado' THEN 0
+      ELSE 50
+    END
+  ) AS porcentaje_avance,
   p.execution_status,
   p.acta,
   p.location,
@@ -1103,7 +1226,10 @@ SELECT
   red_label,
   red_codigo,
   COUNT(*) AS total_ductos,
+  ROUND(SUM(distancia_metros)::numeric, 2) AS distancia_trazas_metros,
+  ROUND(SUM(metros_lineales_reales)::numeric, 2) AS total_metros_lineales_reales,
   ROUND(SUM(metraje_metros)::numeric, 2) AS total_metros,
+  ROUND(AVG(porcentaje_avance)::numeric, 1) AS porcentaje_avance_promedio,
   COUNT(DISTINCT photo_id) AS total_tramos_fisicos
 FROM public.v_tramos_conduits
 GROUP BY red_label, red_codigo
@@ -1116,22 +1242,26 @@ SELECT
   sector_codigo,
   COUNT(DISTINCT photo_id) AS total_tramos_fisicos,
   COUNT(*) AS total_ductos,
+  ROUND(SUM(distancia_metros)::numeric, 2) AS distancia_trazas_metros,
+  ROUND(SUM(metros_lineales_reales)::numeric, 2) AS total_metros_lineales_reales,
   ROUND(SUM(metraje_metros)::numeric, 2) AS total_metros_lineales,
-  ROUND(SUM(CASE WHEN red_codigo = 'media_tension' THEN metraje_metros ELSE 0 END)::numeric, 2) AS metros_mt,
-  ROUND(SUM(CASE WHEN red_codigo = 'baja_tension' THEN metraje_metros ELSE 0 END)::numeric, 2) AS metros_bt,
-  ROUND(SUM(CASE WHEN red_codigo = 'datos' THEN metraje_metros ELSE 0 END)::numeric, 2) AS metros_datos
+  ROUND(SUM(CASE WHEN red_codigo = 'media_tension' THEN metros_lineales_reales ELSE 0 END)::numeric, 2) AS metros_mt_reales,
+  ROUND(SUM(CASE WHEN red_codigo = 'baja_tension' THEN metros_lineales_reales ELSE 0 END)::numeric, 2) AS metros_bt_reales,
+  ROUND(SUM(CASE WHEN red_codigo = 'datos' THEN metros_lineales_reales ELSE 0 END)::numeric, 2) AS metros_datos_reales,
+  ROUND(AVG(porcentaje_avance)::numeric, 1) AS porcentaje_avance_promedio
 FROM public.v_tramos_conduits
 GROUP BY sector_nombre, sector_codigo
 ORDER BY sector_nombre;
 
 -- ============================================================
 -- VISTAS RELACIONALES Y RESÚMENES DE CÁMARAS POR INTERSECCIÓN / SECTOR
--- Solución para evitar flat table y permitir consultas estructuradas por:
--- Sector (Intersección 1 [I1], Intersección 2 [I2], Troncal [TRONCAL]), Tipo de Red (MT, BT, Datos),
--- Estado de Ejecución (No iniciado / Pendiente, En proceso, Terminado), Fecha y Acta.
 -- ============================================================
 
--- 1. Vista de Inventario Normalizado de Cámaras (con Sector y Red estructurados)
+DROP VIEW IF EXISTS public.v_resumen_camaras_interseccion CASCADE;
+DROP VIEW IF EXISTS public.v_matriz_camaras_por_sector CASCADE;
+DROP VIEW IF EXISTS public.v_camaras_inventario CASCADE;
+
+-- 1. Vista de Inventario Normalizado de Cámaras (con Sector, Red y Porcentaje de Avance)
 CREATE OR REPLACE VIEW public.v_camaras_inventario AS
 SELECT
   p.id AS photo_id,
@@ -1160,6 +1290,14 @@ SELECT
     WHEN p.camera_type = 'BT' THEN 'Baja Tensión (BT)'
     ELSE 'Media Tensión (MT)'
   END AS red_label,
+  COALESCE(
+    p.progress_percentage,
+    CASE
+      WHEN p.execution_status = 'Terminado' THEN 100
+      WHEN p.execution_status = 'No iniciado' THEN 0
+      ELSE 50
+    END
+  ) AS porcentaje_avance,
   COALESCE(NULLIF(p.execution_status, ''), 'No iniciado') AS estado_ejecucion,
   COALESCE(NULLIF(p.acta, ''), 'Sin Acta') AS acta,
   p.date AS fecha_inspeccion,
@@ -1175,9 +1313,7 @@ SELECT
 FROM public.inspection_photos p
 WHERE p.element_type = 'camara';
 
--- 2. Vista de Resumen Multidimensional (Intersección, Tipo MT/BT/DATOS, Fecha, Acta y Estado)
-DROP VIEW IF EXISTS public.v_resumen_camaras_interseccion CASCADE;
-
+-- 2. Vista de Resumen Multidimensional con Porcentaje de Avance
 CREATE OR REPLACE VIEW public.v_resumen_camaras_interseccion AS
 WITH camaras_clasificadas AS (
   SELECT
@@ -1206,6 +1342,14 @@ WITH camaras_clasificadas AS (
       WHEN p.camera_type = 'BT' THEN 'BT'
       ELSE 'MT'
     END AS tipo_red,
+    COALESCE(
+      p.progress_percentage,
+      CASE
+        WHEN p.execution_status = 'Terminado' THEN 100
+        WHEN p.execution_status = 'No iniciado' THEN 0
+        ELSE 50
+      END
+    ) AS porcentaje_avance,
     COALESCE(NULLIF(p.execution_status, ''), 'No iniciado') AS estado_ejecucion,
     COALESCE(NULLIF(p.acta, ''), 'Sin Acta') AS acta,
     COALESCE(NULLIF(p.date, ''), 'Sin Fecha') AS fecha_inspeccion,
@@ -1218,6 +1362,7 @@ SELECT
   sector_codigo,
   tipo_red,
   estado_ejecucion,
+  ROUND(AVG(porcentaje_avance)::numeric, 1) AS porcentaje_avance_promedio,
   acta,
   fecha_inspeccion,
   COUNT(*) AS total_camaras,
@@ -1237,9 +1382,7 @@ ORDER BY
   tipo_red,
   estado_ejecucion;
 
--- 3. Vista Matriz Ejecutiva por Sector (Conteo instantáneo de cámaras por red y avance)
-DROP VIEW IF EXISTS public.v_matriz_camaras_por_sector CASCADE;
-
+-- 3. Vista Matriz Ejecutiva por Sector
 CREATE OR REPLACE VIEW public.v_matriz_camaras_por_sector AS
 WITH camaras_clasificadas AS (
   SELECT
@@ -1266,6 +1409,14 @@ WITH camaras_clasificadas AS (
     p.camera_type,
     p.element_type,
     p.execution_status,
+    COALESCE(
+      p.progress_percentage,
+      CASE
+        WHEN p.execution_status = 'Terminado' THEN 100
+        WHEN p.execution_status = 'No iniciado' THEN 0
+        ELSE 50
+      END
+    ) AS porcentaje_avance,
     p.acta
   FROM public.inspection_photos p
   WHERE p.element_type = 'camara' OR (p.element_type IS NULL AND p.camera_code IS NOT NULL)
@@ -1287,18 +1438,15 @@ SELECT
   COUNT(CASE WHEN acta = 'Acta 2' THEN 1 END) AS en_acta_2,
   COUNT(CASE WHEN acta = 'Acta 3' THEN 1 END) AS en_acta_3,
   COUNT(CASE WHEN acta IS NULL OR acta = '' THEN 1 END) AS sin_acta,
-  -- Porcentaje de Avance Físico Estimado
-  ROUND(
-    (COUNT(CASE WHEN execution_status = 'Terminado' THEN 1 END) * 100.0 +
-     COUNT(CASE WHEN execution_status = 'En proceso' THEN 1 END) * 50.0) /
-    NULLIF(COUNT(*), 0),
-    1
-  ) AS porcentaje_avance_estimado
+  -- Porcentaje de Avance Real Promedio de Cámaras
+  ROUND(AVG(porcentaje_avance)::numeric, 1) AS porcentaje_avance_estimado
 FROM camaras_clasificadas
 GROUP BY sector, sector_codigo
 ORDER BY sector;
 
--- 4. Vista de Resumen General por Acta (Cámaras, Tuberías y Metros Lineales)
+-- 4. Vista de Resumen General por Acta (Cámaras, Tuberías y Metros Lineales Reales)
+DROP VIEW IF EXISTS public.v_resumen_global_por_acta CASCADE;
+
 CREATE OR REPLACE VIEW public.v_resumen_global_por_acta AS
 SELECT
   COALESCE(NULLIF(p.acta, ''), 'Sin Acta Asignada') AS acta,
@@ -1310,7 +1458,37 @@ SELECT
   END AS sector,
   COUNT(CASE WHEN p.element_type = 'camara' THEN 1 END) AS total_camaras,
   COUNT(CASE WHEN p.element_type = 'tuberia' THEN 1 END) AS total_tramos,
-  ROUND(SUM(CASE WHEN p.element_type = 'tuberia' THEN COALESCE(NULLIF(p.metraje, '')::numeric, 0) ELSE 0 END), 2) AS metros_tuberias,
+  ROUND(SUM(CASE WHEN p.element_type = 'tuberia' THEN COALESCE(NULLIF(p.metraje, '')::numeric, 0) ELSE 0 END), 2) AS distancia_trazas_metros,
+  ROUND(
+    SUM(
+      CASE
+        WHEN p.element_type = 'tuberia' THEN
+          COALESCE(
+            p.linear_meters,
+            ROUND(
+              COALESCE(NULLIF(SUBSTRING(TRIM(p.tramo) FROM '^([0-9]+)\s*[xX*]'), '')::numeric, 1) *
+              COALESCE(NULLIF(p.metraje, '')::numeric, 0),
+              2
+            )
+          )
+        ELSE 0
+      END
+    ),
+    2
+  ) AS metros_lineales_reales,
+  ROUND(
+    AVG(
+      COALESCE(
+        p.progress_percentage,
+        CASE
+          WHEN p.execution_status = 'Terminado' THEN 100
+          WHEN p.execution_status = 'No iniciado' THEN 0
+          ELSE 50
+        END
+      )
+    )::numeric,
+    1
+  ) AS porcentaje_avance_promedio,
   COUNT(CASE WHEN p.execution_status = 'Terminado' THEN 1 END) AS elementos_terminados,
   COUNT(CASE WHEN p.execution_status = 'En proceso' THEN 1 END) AS elementos_en_proceso,
   COUNT(CASE WHEN p.execution_status = 'No iniciado' OR p.execution_status IS NULL THEN 1 END) AS elementos_pendientes
@@ -1330,6 +1508,7 @@ CREATE TABLE IF NOT EXISTS public.inspection_activities (
   user_id TEXT,
   sector TEXT,
   sector_code TEXT,
+  progress_percentage NUMERIC,
   created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
@@ -1338,6 +1517,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'inspection_activities') THEN
     ALTER TABLE public.inspection_activities ADD COLUMN IF NOT EXISTS sector TEXT;
     ALTER TABLE public.inspection_activities ADD COLUMN IF NOT EXISTS sector_code TEXT;
+    ALTER TABLE public.inspection_activities ADD COLUMN IF NOT EXISTS progress_percentage NUMERIC;
     UPDATE public.inspection_activities
     SET
       sector_code = CASE

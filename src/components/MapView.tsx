@@ -4,7 +4,7 @@
  * relativos al plano, nunca como coordenadas de un proveedor cartográfico.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActaLabelPosition, BlueprintCalibration, BlueprintOverlay, ElectricalElementType, ELECTRICAL_ELEMENT_OPTIONS, getCableTypeOption, getElectricalElementOption, getElectricalPlanArea, getElementType, getPhotoProgressPercentage, getPipeNetworkOption, InspectionPhoto, InspectorProfile, isElectricalElementType, PlanArea } from '../types';
+import { ActaLabelPosition, BlueprintCalibration, BlueprintOverlay, ElectricalElementType, ELECTRICAL_ELEMENT_OPTIONS, getCableTypeOption, getElectricalElementOption, getElectricalPlanArea, getPhotoPlanArea, getElementType, getPhotoProgressPercentage, getPipeNetworkOption, InspectionPhoto, InspectorProfile, isElectricalElementType, PlanArea } from '../types';
 import { compressImageForDevice } from '../services/deviceStorageService';
 import { isQuotaExceededError, loadBlueprintImage, restoreBlueprintFromSources, saveBlueprintImage } from '../services/blueprintStorageService';
 import { BlueprintRevision, getCloudBlueprintRevision, isSupabaseStorageUrl, uploadBlueprintToSupabase } from '../services/supabaseStorageService';
@@ -207,12 +207,13 @@ function isPhotoInAreaBounds(
 }
 
 const isElectricalPhoto = (photo: InspectionPhoto) =>
-  photo.planArea !== 'civil' && isElectricalElementType(photo.electricalType);
-
-const getPhotoPlanArea = (photo: InspectionPhoto): PlanArea =>
-  photo.planArea === 'electrical' || photo.planArea === 'electrical_bt'
-    ? getElectricalPlanArea(photo.electricalType)
-    : photo.planArea || 'civil';
+  photo.planArea !== 'civil' && (
+    isElectricalElementType(photo.electricalType) ||
+    photo.elementType === 'electrico' ||
+    photo.cableType === 'alumbrado' ||
+    photo.planArea === 'electrical_mt' ||
+    photo.planArea === 'electrical_lighting'
+  );
 
 const PLAN_AREA_DETAILS: Record<'civil' | 'electrical_mt' | 'electrical_lighting', { label: string; shortLabel: string; icon: string; color: string; panel: string }> = {
   civil: { label: 'Obras Civiles', shortLabel: 'CIVIL', icon: 'architecture', color: '#073f74', panel: 'bg-[#eaf6fb]' },
@@ -235,7 +236,12 @@ const isPlanFilter = (value: unknown): value is PlanFilter =>
 
 const elementLabel = (photo: InspectionPhoto) => {
   const type = getElementType(photo);
-  if (isElectricalPhoto(photo)) return getElectricalElementOption(photo.electricalType).label;
+  if (isElectricalPhoto(photo)) {
+    if (photo.electricalType === 'cableado') {
+      return photo.cableType === 'alumbrado' ? 'Cable de alumbrado' : 'Cableado eléctrico';
+    }
+    return getElectricalElementOption(photo.electricalType).label;
+  }
   if (type === 'camara') return photo.cameraCode || 'Cámara sin código';
   if (type === 'tuberia') return photo.tramo ? `Tramo ${photo.tramo}` : 'Tubería sin tramo';
   return photo.name || 'Caja sin nombre';

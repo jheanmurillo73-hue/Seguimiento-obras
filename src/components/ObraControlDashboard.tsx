@@ -12,7 +12,13 @@ import {
   Cell,
   Legend,
 } from 'recharts';
-import { InspectionPhoto, InspectorProfile } from '../types';
+import {
+  InspectionPhoto,
+  InspectorProfile,
+  getPhotoProgressPercentage,
+  getPhotoRealLinearMeters,
+  getTramoMultiplier,
+} from '../types';
 import { calculateObraMetrics, getSectorLabel } from '../services/obraAnalyticsService';
 
 interface ObraControlDashboardProps {
@@ -321,7 +327,7 @@ export const ObraControlDashboard: React.FC<ObraControlDashboardProps> = ({
           </div>
         </div>
 
-        {/* KPI 2: Tarjeta Tramos de Tubería (Metros Lineales) */}
+        {/* KPI 2: Tarjeta Tramos de Tubería (Metros Lineales Reales) */}
         <div className="lg:col-span-5 bg-white border border-[#c2c6d4] rounded-2xl p-5 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between border-b border-[#f1f5f9] pb-3 mb-3">
@@ -334,7 +340,7 @@ export const ObraControlDashboard: React.FC<ObraControlDashboardProps> = ({
                     Tubería e Infraestructura Lineal ({activeSectorMetric.sectorName})
                   </h3>
                   <p className="text-[11px] text-[#64748b]">
-                    {activeSectorMetric.tramosTotal} tramos físicos ({activeSectorMetric.metrosTotales.toFixed(1)} m de traza)
+                    {activeSectorMetric.tramosTotal} tramos · {activeSectorMetric.metrosTotales.toFixed(1)} m lineales reales ({activeSectorMetric.distanciaTrazaTotal.toFixed(1)} m zanja)
                   </p>
                 </div>
               </div>
@@ -354,18 +360,18 @@ export const ObraControlDashboard: React.FC<ObraControlDashboardProps> = ({
               />
             </div>
 
-            {/* Indicadores en Metros */}
+            {/* Indicadores en Metros Lineales Reales (Multiplicador x Distancia) */}
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-[#f0fdfa] border border-teal-200 rounded-xl p-3">
-                <div className="text-[11px] font-bold text-teal-800 uppercase">Metros Ejecutados</div>
+                <div className="text-[11px] font-bold text-teal-800 uppercase">Mts Lineales Ejecutados</div>
                 <div className="text-xl font-black text-teal-900 mt-0.5">
                   {activeSectorMetric.metrosEjecutados.toFixed(1)} <span className="text-xs font-normal">m</span>
                 </div>
-                <div className="text-[10px] text-teal-700 mt-1">Con canalización instalada</div>
+                <div className="text-[10px] text-teal-700 mt-1">Multiplicador × Distancia × %</div>
               </div>
 
               <div className="bg-[#f8fafc] border border-slate-200 rounded-xl p-3">
-                <div className="text-[11px] font-bold text-slate-700 uppercase">Metros Totales</div>
+                <div className="text-[11px] font-bold text-slate-700 uppercase">Mts Lineales Reales</div>
                 <div className="text-xl font-black text-slate-900 mt-0.5">
                   {activeSectorMetric.metrosTotales.toFixed(1)} <span className="text-xs font-normal">m</span>
                 </div>
@@ -581,7 +587,8 @@ export const ObraControlDashboard: React.FC<ObraControlDashboardProps> = ({
                 <th className="py-2.5 px-3">Tipo / Red</th>
                 <th className="py-2.5 px-3">Sector</th>
                 <th className="py-2.5 px-3">Acta</th>
-                <th className="py-2.5 px-3">Metraje</th>
+                <th className="py-2.5 px-3">Metraje Real</th>
+                <th className="py-2.5 px-3">% Avance</th>
                 <th className="py-2.5 px-3">Estado</th>
                 <th className="py-2.5 px-3">Observación / Pendiente</th>
                 <th className="py-2.5 px-3 text-right">Acción</th>
@@ -590,7 +597,7 @@ export const ObraControlDashboard: React.FC<ObraControlDashboardProps> = ({
             <tbody className="divide-y divide-[#f1f5f9]">
               {displayItems.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-400">
+                  <td colSpan={9} className="py-8 text-center text-slate-400">
                     No se encontraron elementos con los filtros aplicados.
                   </td>
                 </tr>
@@ -599,6 +606,10 @@ export const ObraControlDashboard: React.FC<ObraControlDashboardProps> = ({
                   const isCam = photo.elementType === 'camara' || (!photo.elementType && Boolean(photo.cameraCode));
                   const isTerminado = photo.executionStatus === 'Terminado';
                   const isEnProceso = photo.executionStatus === 'En proceso';
+                  const progressPct = getPhotoProgressPercentage(photo);
+                  const linearInfo = getPhotoRealLinearMeters(photo);
+                  const realMeters = linearInfo.totalLinearMeters;
+                  const multiplier = linearInfo.multiplier;
 
                   return (
                     <tr
@@ -641,9 +652,37 @@ export const ObraControlDashboard: React.FC<ObraControlDashboardProps> = ({
                         </span>
                       </td>
 
-                      {/* Metraje */}
+                      {/* Metraje Real */}
                       <td className="py-2.5 px-3 font-mono font-semibold text-slate-800">
-                        {photo.metraje ? `${photo.metraje} m` : '—'}
+                        {!isCam && realMeters > 0 ? (
+                          <div>
+                            <span className="text-[#004d99] font-bold">{realMeters.toFixed(1)} m</span>
+                            {multiplier > 1 && (
+                              <span className="block text-[9px] text-slate-500 font-normal">
+                                {multiplier}× ({photo.metraje} m)
+                              </span>
+                            )}
+                          </div>
+                        ) : photo.metraje ? (
+                          `${photo.metraje} m`
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+
+                      {/* % Avance */}
+                      <td className="py-2.5 px-3">
+                        <div className="flex items-center gap-1.5 min-w-[70px]">
+                          <div className="w-12 bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className={`h-1.5 rounded-full ${getProgressColor(progressPct)}`}
+                              style={{ width: `${progressPct}%` }}
+                            />
+                          </div>
+                          <span className="font-mono font-bold text-[11px] text-slate-700">
+                            {progressPct}%
+                          </span>
+                        </div>
                       </td>
 
                       {/* Estado */}

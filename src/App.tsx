@@ -18,8 +18,11 @@ import {
   ElectricalElementType,
   getElectricalElementOption,
   getElectricalPlanArea,
+  getPhotoPlanArea,
+  getCableTypeOption,
   PlanArea,
   getPhotoProgressPercentage,
+  calculateRealLinearMeters,
   ActivityActionCategory,
   getElementSector,
 } from './types';
@@ -52,6 +55,11 @@ import { clearBlueprintImage, clearEvidenceImages, loadEvidenceImages, saveEvide
 import { canAccessModule, createFallbackAccess, MODULE_DEFINITIONS } from './lib/accessControl';
 import { applyPhotoUpdatePermissions } from './lib/photoPermissions';
 import { useSupabaseConnection } from './hooks/useSupabaseConnection';
+import {
+  saveElementProgress,
+  getElementProgress,
+  decodeProgressFromFieldNotes,
+} from './lib/elementProgressStorage';
 import { Footer } from './components/Footer';
 import { Toast } from './components/Toast';
 
@@ -93,6 +101,29 @@ const normalizeInspectionPhoto = (photo: InspectionPhoto): InspectionPhoto => {
   const primaryConduit = pipeConduits[0];
   const sectorInfo = getElementSector(photo.name);
 
+  // Recuperar progreso sin pérdida de información
+  const localStoredProgress = photo.id ? getElementProgress(photo.id) : undefined;
+  const decodedProgress = decodeProgressFromFieldNotes(photo.fieldNotes);
+  const resolvedProgress =
+    typeof photo.progressPercentage === 'number' && !Number.isNaN(photo.progressPercentage)
+      ? Math.max(0, Math.min(100, Math.round(photo.progressPercentage)))
+      : localStoredProgress !== undefined
+        ? localStoredProgress
+        : decodedProgress.progress !== undefined
+          ? decodedProgress.progress
+          : photo.executionStatus === 'Terminado'
+            ? 100
+            : photo.executionStatus === 'No iniciado'
+              ? 0
+              : 50;
+
+  if (photo.id) {
+    saveElementProgress(photo.id, resolvedProgress);
+  }
+
+  const effectiveTramo = isPipeline ? primaryConduit?.configuration : photo.tramo;
+  const effectiveMetraje = isPipeline ? primaryConduit?.meters : photo.metraje;
+
   return {
     ...photo,
     sector: sectorInfo.label,
@@ -103,18 +134,22 @@ const normalizeInspectionPhoto = (photo: InspectionPhoto): InspectionPhoto => {
     name: photo.name ?? 'Inspección sin nombre',
     type: photo.type ?? '',
     location: photo.location ?? '',
-    fieldNotes: photo.fieldNotes ?? '',
+    fieldNotes: decodedProgress.cleanFieldNotes || photo.fieldNotes || '',
     executionStatus: photo.executionStatus ?? 'En proceso',
+    progressPercentage: resolvedProgress,
+    linearMeters: calculateRealLinearMeters(effectiveTramo, effectiveMetraje),
     status: photo.status ?? 'Synced',
     requiresImmediateAction: Boolean(photo.requiresImmediateAction),
     verified: Boolean(photo.verified),
-    planArea: photo.electricalType || photo.planArea === 'electrical'
-      ? getElectricalPlanArea(photo.electricalType)
-      : photo.planArea || 'civil',
+    planArea: getPhotoPlanArea(photo),
     electricalType: photo.electricalType,
-    electricalColor: photo.electricalType ? getElectricalElementOption(photo.electricalType).color : undefined,
-    tramo: isPipeline ? primaryConduit?.configuration : photo.tramo,
-    metraje: isPipeline ? primaryConduit?.meters : photo.metraje,
+    electricalColor: photo.electricalType
+      ? (photo.electricalType === 'cableado' && photo.cableType
+          ? getCableTypeOption(photo.cableType).color
+          : getElectricalElementOption(photo.electricalType).color)
+      : undefined,
+    tramo: effectiveTramo,
+    metraje: effectiveMetraje,
     pipeNetworkType: isPipeline ? primaryConduit?.networkType : undefined,
     pipeColor: isPipeline && primaryConduit
       ? getPipeNetworkOption(primaryConduit.networkType).color
@@ -467,6 +502,7 @@ export default function App() {
     });
     showToast(`Actualizado "${protectedUpdate.name}"`);
 
+    saveElementProgress(protectedUpdate.id, getPhotoProgressPercentage(protectedUpdate));
     syncPhotoToSupabase(protectedUpdate, `Los cambios de "${protectedUpdate.name}"`);
   };
 
@@ -488,6 +524,7 @@ export default function App() {
     setPhotos((prev) => prev.map((p) => idMap.get(p.id) || p));
 
     protectedList.forEach((photo) => {
+      saveElementProgress(photo.id, getPhotoProgressPercentage(photo));
       syncPhotoToSupabase(photo, `El elemento "${photo.name}"`);
     });
 
@@ -565,14 +602,28 @@ export default function App() {
     const isElectrical = elementType === 'electrico' && Boolean(electricalType);
     const isCable = electricalType === 'cableado';
     const electricalOption = getElectricalElementOption(electricalType);
-    const cableType = electricalArea === 'electrical_lighting'
-      ? 'alumbrado'
-      : electricalArea === 'electrical_bt' ? 'baja_tension' : 'media_tension';
-    const elementName = isCable ? 'Cableado' : isCamera ? 'Cámara' : isPipeline ? 'Tramo de tubería' : 'Caja';
+    const resolvedCableType = isCable
+      ? (electricalArea === 'electrical_lighting'
+          ? 'alumbrado'
+          : electricalArea === 'electrical_bt' ? 'baja_tension' : 'media_tension')
+      : undefined;
+    const resolvedPlanArea = isElectrical
+      ? (electricalArea === 'electrical_lighting' || electricalType === 'poste_alumbrado' || resolvedCableType === 'alumbrado'
+          ? 'electrical_lighting'
+          : electricalArea || getElectricalPlanArea(electricalType, resolvedCableType, electricalArea))
+      : 'civil';
+    const cableType = resolvedCableType;
+    const elementName = isCable
+      ? (cableType === 'alumbrado' ? 'Cable de alumbrado' : 'Cableado eléctrico')
+      : isCamera ? 'Cámara' : isPipeline ? 'Tramo de tubería' : 'Caja';
     const newPhoto = normalizeInspectionPhoto({
       id: `plan-${Date.now()}`,
       displayId: `INSP-${createdAt.getFullYear()}-${suffix}`,
-      name: isElectrical ? `Nuevo ${electricalOption.label.toLowerCase()}` : isCamera ? 'Nueva cámara' : isPipeline ? 'Nuevo tramo de tubería' : 'Nueva caja',
+      name: isElectrical
+        ? (isCable
+            ? (cableType === 'alumbrado' ? 'Nuevo cable de alumbrado' : 'Nuevo cableado eléctrico')
+            : `Nuevo ${electricalOption.label.toLowerCase()}`)
+        : isCamera ? 'Nueva cámara' : isPipeline ? 'Nuevo tramo de tubería' : 'Nueva caja',
       imageUrl: createMapElementPreview(elementType),
       date: createdAt.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })
         + `, ${createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
@@ -583,11 +634,13 @@ export default function App() {
       categoryLabel: isElectrical ? 'Obras Eléctricas' : 'Inspección General',
       location: 'Plano de obra',
       elementType,
-      planArea: isElectrical ? electricalArea || getElectricalPlanArea(electricalType) : 'civil',
+      planArea: resolvedPlanArea,
       electricalType: isElectrical ? electricalType : undefined,
-      electricalColor: isElectrical ? electricalOption.color : undefined,
+      electricalColor: isElectrical
+        ? (isCable && cableType ? getCableTypeOption(cableType).color : electricalOption.color)
+        : undefined,
       cableType: isCable ? cableType : undefined,
-      cableGauge: isCable ? (electricalArea === 'electrical_lighting' ? '12' : '350') : undefined,
+      cableGauge: isCable ? (resolvedPlanArea === 'electrical_lighting' ? '12' : '350') : undefined,
       cableMeters: isCable ? initialMetraje ?? 0 : undefined,
       cameraCode: isCamera ? 'SB850' : undefined,
       cameraType: isCamera ? 'MT' : undefined,

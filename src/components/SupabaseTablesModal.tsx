@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabaseService, SupabaseConnectionStatus } from '../services/supabaseService';
 import { getActiveSupabaseConfig, saveCustomSupabaseConfig, resetSupabaseConfig } from '../lib/supabase';
-import { InspectionPhoto, InspectorProfile, getPhotoNetworkInfo, getElementSector, SectorCode } from '../types';
+import {
+  InspectionPhoto,
+  InspectorProfile,
+  getPhotoNetworkInfo,
+  getElementSector,
+  SectorCode,
+  extractTramoMultiplier,
+} from '../types';
 
 interface SupabaseTablesModalProps {
   isOpen: boolean;
@@ -279,11 +286,13 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
 
       conduits.forEach(c => {
         m.totalDuctos++;
-        const meters = parseFloat(String(c.meters || '0')) || 0;
-        m.totalMetros += meters;
-        if (c.networkType === 'media_tension') m.mtMetros += meters;
-        else if (c.networkType === 'baja_tension') m.btMetros += meters;
-        else if (c.networkType === 'datos') m.datosMetros += meters;
+        const dist = parseFloat(String(c.meters || '0')) || 0;
+        const mult = extractTramoMultiplier(c.configuration || p.tramo);
+        const realLinear = mult * dist;
+        m.totalMetros += realLinear;
+        if (c.networkType === 'media_tension') m.mtMetros += realLinear;
+        else if (c.networkType === 'baja_tension') m.btMetros += realLinear;
+        else if (c.networkType === 'datos') m.datosMetros += realLinear;
       });
     });
 
@@ -443,6 +452,8 @@ export const SupabaseTablesModal: React.FC<SupabaseTablesModalProps> = ({
         { name: 'date_raw', type: 'TEXT', constraints: 'NULL', description: 'Timestamp de fecha ISO 8601' },
         { name: 'status', type: 'TEXT', constraints: "CHECK ('Synced', 'In Progress', 'Flagged')", description: 'Estado de sincronización' },
         { name: 'execution_status', type: 'TEXT', constraints: "CHECK ('No iniciado', 'En proceso', 'Terminado')", description: 'Estado operativo del trabajo en campo' },
+        { name: 'progress_percentage', type: 'NUMERIC', constraints: 'DEFAULT 0 (0-100)', description: 'Porcentaje de avance físico ejecutado del elemento' },
+        { name: 'linear_meters', type: 'NUMERIC', constraints: 'DEFAULT 0', description: 'Metros lineales reales (Multiplicador de ductos × Distancia física)' },
         { name: 'category', type: 'TEXT', constraints: 'NOT NULL', description: 'Categoría interna (structural, electrical, etc.)' },
         { name: 'category_label', type: 'TEXT', constraints: 'NOT NULL', description: 'Etiqueta legible de la categoría' },
         { name: 'location', type: 'TEXT', constraints: 'NOT NULL', description: 'Ubicación física / Bodega' },
