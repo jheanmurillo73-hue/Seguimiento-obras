@@ -941,10 +941,18 @@ export default function App() {
             ) : (
               <DashboardView
                 photos={photos}
+                inspector={inspector}
                 onSelectPhoto={handleSelectPhoto}
                 onUpdatePhotoTitle={handleUpdatePhotoTitle}
                 onDeletePhoto={handleDeletePhoto}
                 onNavigateToUpload={() => handleTabChange('upload')}
+                onNavigateToMap={(targetPhoto) => {
+                  if (targetPhoto) {
+                    setSelectedPhotoId(targetPhoto.id);
+                  }
+                  handleTabChange('map');
+                }}
+                onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
               />
             )}
           </main>

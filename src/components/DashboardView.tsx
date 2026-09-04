@@ -1,21 +1,29 @@
 import React, { useState } from 'react';
-import { InspectionPhoto, SyncStatus, ExecutionStatus } from '../types';
+import { InspectionPhoto, SyncStatus, ExecutionStatus, InspectorProfile } from '../types';
+import { ObraControlDashboard } from './ObraControlDashboard';
 
 interface DashboardViewProps {
   photos: InspectionPhoto[];
+  inspector?: InspectorProfile;
   onSelectPhoto: (photo: InspectionPhoto) => void;
   onUpdatePhotoTitle: (id: string, newTitle: string) => void;
   onDeletePhoto: (id: string) => void;
   onNavigateToUpload: () => void;
+  onNavigateToMap?: (photo?: InspectionPhoto) => void;
+  onOpenSupabaseModal?: () => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   photos,
+  inspector,
   onSelectPhoto,
   onUpdatePhotoTitle,
   onDeletePhoto,
   onNavigateToUpload,
+  onNavigateToMap,
+  onOpenSupabaseModal,
 }) => {
+  const [activeSubTab, setActiveSubTab] = useState<'control_obra' | 'galeria'>('control_obra');
   const [filter, setFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [photoToDelete, setPhotoToDelete] = useState<InspectionPhoto | null>(null);
@@ -90,31 +98,74 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   return (
-    <div className="max-w-[1280px] mx-auto w-full">
-      {/* Header Section */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-        <div>
-          <h1 className="font-['Hanken_Grotesk'] text-2xl sm:text-[32px] font-bold text-[#071e27] leading-tight">
-            Cargas Recientes
-          </h1>
-          <p className="font-['Inter'] text-[14px] text-[#424752] mt-1.5">
-            Gestiona y revisa fotos recientes de inspección con control de estado (En proceso / Terminado).
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onNavigateToUpload}
-          className="bg-[#004d99] hover:bg-[#00468c] text-white font-['Inter'] font-bold text-[14px] px-6 py-3 rounded-xl flex items-center gap-2 transition-colors shadow-sm active:scale-98"
-        >
-          <span
-            className="material-symbols-outlined text-[20px]"
-            style={{ fontVariationSettings: "'FILL' 1" }}
+    <div className="max-w-[1280px] mx-auto w-full space-y-6">
+      {/* Top View Selector Bar: Control de Obra (Power BI) vs Galería Reciente */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-2 sm:p-2.5 rounded-2xl border border-[#c2c6d4] shadow-2xs">
+        <div className="flex items-center gap-1.5 p-1 bg-[#f1f5f9] rounded-xl border border-[#cbd5e1] w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('control_obra')}
+            className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+              activeSubTab === 'control_obra'
+                ? 'bg-[#004d99] text-white shadow-xs'
+                : 'text-[#334155] hover:bg-white hover:text-[#004d99]'
+            }`}
           >
-            upload
-          </span>
-          Subir Nueva Foto
-        </button>
+            <span className="material-symbols-outlined text-[18px]">analytics</span>
+            <span>Control de Obra (Power BI)</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-100 text-blue-900 border border-blue-200">
+              Nuevo
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('galeria')}
+            className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+              activeSubTab === 'galeria'
+                ? 'bg-[#004d99] text-white shadow-xs'
+                : 'text-[#334155] hover:bg-white hover:text-[#004d99]'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[18px]">grid_view</span>
+            <span>Galería de Fotos ({photos.length})</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 justify-end">
+          <button
+            type="button"
+            onClick={onNavigateToUpload}
+            className="bg-[#004d99] hover:bg-[#00468c] text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-1.5 transition-colors shadow-xs"
+          >
+            <span className="material-symbols-outlined text-[18px]">upload</span>
+            Subir Nueva Foto
+          </button>
+        </div>
       </div>
+
+      {/* Renderizar según la pestaña activa */}
+      {activeSubTab === 'control_obra' ? (
+        <ObraControlDashboard
+          photos={photos}
+          inspector={inspector}
+          onSelectPhoto={onSelectPhoto}
+          onNavigateToMap={onNavigateToMap || (() => {})}
+          onNavigateToUpload={onNavigateToUpload}
+          onOpenSupabaseModal={onOpenSupabaseModal}
+        />
+      ) : (
+        <>
+          {/* Header Section */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+              <h1 className="font-['Hanken_Grotesk'] text-2xl sm:text-[32px] font-bold text-[#071e27] leading-tight">
+                Cargas Recientes
+              </h1>
+              <p className="font-['Inter'] text-[14px] text-[#424752] mt-1.5">
+                Gestiona y revisa fotos recientes de inspección con control de estado (En proceso / Terminado).
+              </p>
+            </div>
+          </div>
 
       {/* Filter and Search Bar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-6 bg-white p-3 rounded-xl border border-[#c2c6d4]">
@@ -376,6 +427,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );
